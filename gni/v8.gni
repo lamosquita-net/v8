@@ -193,10 +193,7 @@ if (v8_enable_backtrace == "") {
 
 # Chromium is configured to use the perfetto client library, v8 should also
 # use perfetto for tracing.
-# FlyWeb: V8 12.6 dropped use_perfetto_client_library (a4a0cb9ebe9) because
-# Chromium 126 always uses it; Chromium 116 only does on Linux, and its
-# Perfetto lacks the chrome/v8 protos, so keep the 12.5 condition.
-if (build_with_chromium && use_perfetto_client_library) {
+if (build_with_chromium) {
   v8_use_perfetto = true
 }
 

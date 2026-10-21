@@ -166,13 +166,14 @@ class CppgcPlatformAdapter final : public cppgc::Platform {
     return platform_->MonotonicallyIncreasingTime();
   }
 
-  std::shared_ptr<TaskRunner> GetForegroundTaskRunner() final {
+  std::shared_ptr<TaskRunner> GetForegroundTaskRunner(
+      TaskPriority priority) final {
     // If no Isolate has been set, there's no task runner to leverage for
     // foreground tasks. In detached mode the original platform handles the
     // task runner retrieval.
     if (!isolate_ && !is_in_detached_mode_) return nullptr;
 
-    return platform_->GetForegroundTaskRunner(isolate_);
+    return platform_->GetForegroundTaskRunner(isolate_, priority);
   }
 
   std::unique_ptr<JobHandle> PostJob(TaskPriority priority,
@@ -741,8 +742,6 @@ void CppHeap::InitializeMarking(CollectionType collection_type,
       IsForceGC(current_gc_flags_)
           ? cppgc::internal::MarkingConfig::IsForcedGC::kForced
           : cppgc::internal::MarkingConfig::IsForcedGC::kNotForced,
-      v8::base::TimeDelta::FromMilliseconds(
-          v8_flags.incremental_marking_task_delay_ms),
       v8_flags.incremental_marking_bailout_when_ahead_of_schedule};
   DCHECK_IMPLIES(!isolate_,
                  (MarkingType::kAtomic == marking_config.marking_type) ||
@@ -919,7 +918,23 @@ void CppHeap::CompactAndSweep() {
   // The allocated bytes counter in v8 was reset to the current marked bytes, so
   // any pending allocated bytes updates should be discarded.
   buffered_allocated_bytes_ = 0;
-  const size_t bytes_allocated_in_prefinalizers = ExecutePreFinalizers();
+  size_t bytes_allocated_in_prefinalizers;
+  {
+    // Pre-finalizers may reset `TracedReference`s of objects that are about to
+    // be destroyed, either directly or through some method they invoke. Traced
+    // nodes of dead references have already been reclaimed in
+    // `TracedHandles::ResetDeadNodes()` in the atomic pause, so freeing them
+    // eagerly here would free the same node twice, corrupting the free list.
+    // Running pre-finalizers as sweeping on the mutator thread makes
+    // `TracedHandles::Destroy()` skip reclamation; still-in-use nodes are
+    // reclaimed in the next GC cycle instead.
+    std::optional<SweepingOnMutatorThreadForGlobalHandlesScope>
+        global_handles_scope;
+    if (isolate_) {
+      global_handles_scope.emplace(*isolate_->traced_handles());
+    }
+    bytes_allocated_in_prefinalizers = ExecutePreFinalizers();
+  }
 #if CPPGC_VERIFY_HEAP
   UnifiedHeapMarkingVerifier verifier(*this, *collection_type_);
   verifier.Run(stack_state_of_prev_gc(),
@@ -953,12 +968,7 @@ void CppHeap::CompactAndSweep() {
             ? cppgc::internal::SweepingConfig::FreeMemoryHandling::
                   kDiscardWherePossible
             : cppgc::internal::SweepingConfig::FreeMemoryHandling::
-                  kDoNotDiscard,
-        // CppHeap is initialized before V8 flags are necessarily set which
-        // prohibits us from reading the flag at creation.
-        v8_flags.cppheap_optimize_sweep_for_mutator
-            ? cppgc::internal::SweepingStrategy::kMinimizeMutatorInterference
-            : cppgc::internal::SweepingStrategy::kMinimizeMemory};
+                  kDoNotDiscard};
     DCHECK_IMPLIES(!isolate_,
                    SweepingType::kAtomic == sweeping_config.sweeping_type);
     sweeper().Start(sweeping_config);

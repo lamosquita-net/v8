@@ -19,6 +19,8 @@
 namespace v8 {
 namespace internal {
 
+#include "src/codegen/define-code-stub-assembler-macros.inc"
+
 template <class T>
 using TVariable = compiler::TypedCodeAssemblerVariable<T>;
 
@@ -347,8 +349,8 @@ TNode<JSObject> BaseCollectionsAssembler::AllocateJSCollection(
 
   return Select<JSObject>(
       is_target_unmodified,
-      [=] { return AllocateJSCollectionFast(constructor); },
-      [=] {
+      [=, this] { return AllocateJSCollectionFast(constructor); },
+      [=, this] {
         return AllocateJSCollectionSlow(context, constructor, new_target);
       });
 }
@@ -531,8 +533,9 @@ TNode<BoolT> BaseCollectionsAssembler::HasInitialCollectionPrototype(
 TNode<Object> BaseCollectionsAssembler::LoadAndNormalizeFixedArrayElement(
     TNode<FixedArray> elements, TNode<IntPtrT> index) {
   TNode<Object> element = UnsafeLoadFixedArrayElement(elements, index);
-  return Select<Object>(IsTheHole(element), [=] { return UndefinedConstant(); },
-                        [=] { return element; });
+  return Select<Object>(
+      IsTheHole(element), [=, this] { return UndefinedConstant(); },
+      [=] { return element; });
 }
 
 TNode<Object> BaseCollectionsAssembler::LoadAndNormalizeFixedDoubleArrayElement(
@@ -2508,11 +2511,12 @@ TF_BUILTIN(FindOrderedHashSetEntry, CollectionsBuiltinsAssembler) {
 }
 
 const TNode<OrderedHashMap> CollectionsBuiltinsAssembler::AddValueToKeyedGroup(
-    const TNode<OrderedHashMap> groups, const TNode<Object> key,
-    const TNode<Object> value, const TNode<String> methodName) {
-  GrowCollection<OrderedHashMap> grow = [this, groups, methodName]() {
-    TNode<OrderedHashMap> new_groups = CAST(CallRuntime(
-        Runtime::kOrderedHashMapGrow, NoContextConstant(), groups, methodName));
+    const TNode<Context> context, const TNode<OrderedHashMap> groups,
+    const TNode<Object> key, const TNode<Object> value,
+    const TNode<String> methodName) {
+  GrowCollection<OrderedHashMap> grow = [&]() {
+    TNode<OrderedHashMap> new_groups = CAST(
+        CallRuntime(Runtime::kOrderedHashMapGrow, context, groups, methodName));
     // The groups OrderedHashMap is not escaped to user script while grouping
     // items, so there can't be live iterators. So we don't need to keep the
     // pointer from the old table to the new one.
@@ -3045,6 +3049,8 @@ TF_BUILTIN(WeakSetPrototypeHas, WeakCollectionsBuiltinsAssembler) {
   BIND(&return_false);
   Return(FalseConstant());
 }
+
+#include "src/codegen/undef-code-stub-assembler-macros.inc"
 
 }  // namespace internal
 }  // namespace v8

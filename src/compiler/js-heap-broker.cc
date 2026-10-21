@@ -4,6 +4,8 @@
 
 #include "src/compiler/js-heap-broker.h"
 
+#include <optional>
+
 #ifdef ENABLE_SLOW_DCHECKS
 #include <algorithm>
 #endif
@@ -338,7 +340,7 @@ OptionalObjectRef GlobalAccessFeedback::GetConstantHint(
   } else if (IsScriptContextSlot() && immutable()) {
     return script_context().get(broker, slot_index());
   } else {
-    return base::nullopt;
+    return std::nullopt;
   }
 }
 
@@ -490,29 +492,24 @@ ProcessedFeedback const& JSHeapBroker::ReadFeedbackForPropertyAccess(
   if (nexus.IsUninitialized()) return NewInsufficientFeedback(kind);
 
   ZoneVector<MapRef> maps(zone());
-  {
-    std::vector<MapAndHandler> maps_and_handlers_unfiltered;
-    nexus.ExtractMapsAndFeedback(&maps_and_handlers_unfiltered);
-
-    for (const MapAndHandler& map_and_handler : maps_and_handlers_unfiltered) {
-      MapRef map = MakeRefAssumeMemoryFence(this, *map_and_handler.first);
-      // May change concurrently at any time - must be guarded by a dependency
-      // if non-deprecation is important.
-      if (map.is_deprecated()) {
-        // TODO(ishell): support fast map updating if we enable it.
-        CHECK(!v8_flags.fast_map_update);
-        base::Optional<Tagged<Map>> maybe_map = MapUpdater::TryUpdateNoLock(
-            isolate(), *map.object(), ConcurrencyMode::kConcurrent);
-        if (maybe_map.has_value()) {
-          map = MakeRefAssumeMemoryFence(this, maybe_map.value());
-        } else {
-          continue;  // Couldn't update the deprecated map.
-        }
+  nexus.IterateMapsWithUnclearedHandler([this, &maps](Handle<Map> map_handle) {
+    MapRef map = MakeRefAssumeMemoryFence(this, *map_handle);
+    // May change concurrently at any time - must be guarded by a
+    // dependency if non-deprecation is important.
+    if (map.is_deprecated()) {
+      // TODO(ishell): support fast map updating if we enable it.
+      CHECK(!v8_flags.fast_map_update);
+      std::optional<Tagged<Map>> maybe_map = MapUpdater::TryUpdateNoLock(
+          isolate(), *map.object(), ConcurrencyMode::kConcurrent);
+      if (maybe_map.has_value()) {
+        map = MakeRefAssumeMemoryFence(this, maybe_map.value());
+      } else {
+        return;  // Couldn't update the deprecated map.
       }
-      if (map.is_abandoned_prototype_map()) continue;
-      maps.push_back(map);
     }
-  }
+    if (map.is_abandoned_prototype_map()) return;
+    maps.push_back(map);
+  });
 
   OptionalNameRef name =
       static_name.has_value() ? static_name : GetNameFeedback(nexus);
@@ -914,7 +911,7 @@ void ElementAccessFeedback::AddGroup(TransitionGroup&& group) {
 
 OptionalNameRef JSHeapBroker::GetNameFeedback(FeedbackNexus const& nexus) {
   Tagged<Name> raw_name = nexus.GetName();
-  if (raw_name.is_null()) return base::nullopt;
+  if (raw_name.is_null()) return std::nullopt;
   return MakeRefAssumeMemoryFence(this, raw_name);
 }
 

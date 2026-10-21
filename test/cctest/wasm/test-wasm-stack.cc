@@ -213,7 +213,7 @@ WASM_COMPILED_EXEC_TEST(CollectDetailedWasmStack_WasmUrl) {
   DirectHandle<FixedArray> stack_trace_object =
       isolate->GetSimpleStackTrace(Cast<JSReceiver>(exception));
   CHECK_NE(0, stack_trace_object->length());
-  Handle<CallSiteInfo> stack_frame(
+  DirectHandle<CallSiteInfo> stack_frame(
       Cast<CallSiteInfo>(stack_trace_object->get(0)), isolate);
 
   MaybeHandle<String> maybe_stack_trace_str =
@@ -232,7 +232,6 @@ WASM_COMPILED_EXEC_TEST(CollectDetailedWasmStack_WasmError) {
   for (int pos_shift = 0; pos_shift < 3; ++pos_shift) {
     // Test a position with 1, 2 or 3 bytes needed to represent it.
     int unreachable_pos = 1 << (8 * pos_shift);
-    TestSignatures sigs;
     // Create a WasmRunner with stack checks and traps enabled.
     WasmRunner<int> r(execution_tier, kWasmOrigin, nullptr, "main");
 

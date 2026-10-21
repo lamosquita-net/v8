@@ -367,10 +367,12 @@ void LateLoadEliminationAnalyzer::ProcessStore(OpIndex op_idx,
     non_aliasing_objects_.Set(value, false);
   }
 
-  // If we just stored a map, invalidate the maps for this base.
+  // If we just stored a map, invalidate all object_maps_.
+  // FlyWeb: v8 37d6fa3f (M132-LTS 5cf18d03, crbug 417169470): other objects may
+  // alias {store.base()}. The upstream tracing code is left out.
   if (store.offset == HeapObject::kMapOffset && !store.index().valid()) {
-    if (object_maps_.HasKeyFor(store.base())) {
-      object_maps_.Set(store.base(), MapMaskAndOr{});
+    for (auto it : object_maps_) {
+      object_maps_.Set(it.second, MapMaskAndOr{});
     }
   }
 }

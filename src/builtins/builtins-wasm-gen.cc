@@ -13,9 +13,11 @@
 
 namespace v8::internal {
 
+#include "src/codegen/define-code-stub-assembler-macros.inc"
+
 TNode<WasmTrustedInstanceData>
 WasmBuiltinsAssembler::LoadInstanceDataFromFrame() {
-  return CAST(LoadFromParentFrame(WasmFrameConstants::kWasmInstanceOffset));
+  return CAST(LoadFromParentFrame(WasmFrameConstants::kWasmInstanceDataOffset));
 }
 
 TNode<WasmTrustedInstanceData>
@@ -28,32 +30,32 @@ WasmBuiltinsAssembler::LoadTrustedDataFromInstance(
 
 TNode<NativeContext> WasmBuiltinsAssembler::LoadContextFromWasmOrJsFrame() {
   static_assert(BuiltinFrameConstants::kFunctionOffset ==
-                WasmFrameConstants::kWasmInstanceOffset);
+                WasmFrameConstants::kWasmInstanceDataOffset);
   TVARIABLE(NativeContext, context_result);
   TNode<HeapObject> function_or_instance =
-      CAST(LoadFromParentFrame(WasmFrameConstants::kWasmInstanceOffset));
-  Label js(this);
-  Label apifunc(this);
+      CAST(LoadFromParentFrame(WasmFrameConstants::kWasmInstanceDataOffset));
+  Label is_js_function(this);
+  Label is_import_data(this);
   Label done(this);
   TNode<Uint16T> instance_type =
       LoadMapInstanceType(LoadMap(function_or_instance));
-  GotoIf(IsJSFunctionInstanceType(instance_type), &js);
-  GotoIf(Word32Equal(instance_type, Int32Constant(WASM_API_FUNCTION_REF_TYPE)),
-         &apifunc);
+  GotoIf(IsJSFunctionInstanceType(instance_type), &is_js_function);
+  GotoIf(Word32Equal(instance_type, Int32Constant(WASM_IMPORT_DATA_TYPE)),
+         &is_import_data);
   context_result = LoadContextFromInstanceData(CAST(function_or_instance));
   Goto(&done);
 
-  BIND(&js);
+  BIND(&is_js_function);
   TNode<JSFunction> function = CAST(function_or_instance);
   TNode<Context> context =
       LoadObjectField<Context>(function, JSFunction::kContextOffset);
   context_result = LoadNativeContext(context);
   Goto(&done);
 
-  BIND(&apifunc);
-  TNode<WasmApiFunctionRef> apiref = CAST(function_or_instance);
+  BIND(&is_import_data);
+  TNode<WasmImportData> import_data = CAST(function_or_instance);
   context_result = LoadObjectField<NativeContext>(
-      apiref, WasmApiFunctionRef::kNativeContextOffset);
+      import_data, WasmImportData::kNativeContextOffset);
   Goto(&done);
 
   BIND(&done);
@@ -161,19 +163,88 @@ TF_BUILTIN(JSToWasmLazyDeoptContinuation, WasmBuiltinsAssembler) {
 
 TF_BUILTIN(WasmToJsWrapperCSA, WasmBuiltinsAssembler) {
   TorqueStructWasmToJSResult result = WasmToJSWrapper(
-      UncheckedParameter<WasmApiFunctionRef>(Descriptor::kWasmApiFunctionRef));
+      UncheckedParameter<WasmImportData>(Descriptor::kWasmImportData));
   PopAndReturn(result.popCount, result.result0, result.result1, result.result2,
                result.result3);
 }
 
 TF_BUILTIN(WasmToJsWrapperInvalidSig, WasmBuiltinsAssembler) {
-  TNode<WasmApiFunctionRef> ref =
-      UncheckedParameter<WasmApiFunctionRef>(Descriptor::kWasmApiFunctionRef);
+  TNode<WasmImportData> data =
+      UncheckedParameter<WasmImportData>(Descriptor::kWasmImportData);
   TNode<Context> context =
-      LoadObjectField<Context>(ref, WasmApiFunctionRef::kNativeContextOffset);
+      LoadObjectField<Context>(data, WasmImportData::kNativeContextOffset);
 
   CallRuntime(Runtime::kWasmThrowJSTypeError, context);
   Unreachable();
 }
+
+// FlyWeb: CVE-2026-87491 (v8 36079c36, crbug 543557673), same interface as
+// the old Torque builtin (it keeps the context parameter, so callers are
+// unchanged). Wasm uses private symbols (e.g. wasm_exception_tag_symbol) to
+// stamp certain objects. This builtin checks for presence of such symbols; it
+// is a specialization of "GetOwnProperty" behavior: if the object is not a
+// plain JS object or the property is not an own data property, return
+// undefined. To allow compilers to assume no side effects from this builtin,
+// it's particularly important to not invoke any getters.
+TF_BUILTIN(WasmGetOwnProperty, WasmBuiltinsAssembler) {
+  TNode<Object> object = Parameter<Object>(Descriptor::kObject);
+  TNode<Name> name = Parameter<Name>(Descriptor::kUniqueName);
+
+  Label return_undefined(this, Label::kDeferred);
+
+  GotoIf(TaggedIsSmi(object), &return_undefined);
+  TNode<HeapObject> heap_object = CAST(object);
+
+  TNode<Map> map = LoadMap(heap_object);
+  TNode<Int32T> instance_type = LoadMapInstanceType(map);
+
+  GotoIfNot(IsJSReceiverInstanceType(instance_type), &return_undefined);
+  GotoIf(IsSpecialReceiverInstanceType(instance_type), &return_undefined);
+
+  TNode<JSObject> js_object = CAST(heap_object);
+
+  {
+    TVARIABLE(HeapObject, var_meta_storage);
+    TVARIABLE(IntPtrT, var_entry);
+    TVARIABLE(Object, var_value);
+    TVARIABLE(Uint32T, var_details);
+    Label if_found_fast(this), if_found_dict(this), got_value(this);
+
+    TryLookupPropertyInSimpleObject(js_object, map, name, &if_found_fast,
+                                    &if_found_dict, &var_meta_storage,
+                                    &var_entry, &return_undefined,
+                                    &return_undefined);
+
+    BIND(&if_found_fast);
+    {
+      TNode<DescriptorArray> descriptors = CAST(var_meta_storage.value());
+      LoadPropertyFromFastObject(js_object, map, descriptors, var_entry.value(),
+                                 &var_details, &var_value);
+      Goto(&got_value);
+    }
+
+    BIND(&if_found_dict);
+    {
+      TNode<PropertyDictionary> dictionary = CAST(var_meta_storage.value());
+      LoadPropertyFromDictionary(dictionary, var_entry.value(), &var_details,
+                                 &var_value);
+      Goto(&got_value);
+    }
+
+    BIND(&got_value);
+    {
+      TNode<Uint32T> kind =
+          DecodeWord32<PropertyDetails::KindField>(var_details.value());
+      constexpr int kData = static_cast<int>(PropertyKind::kData);
+      GotoIfNot(Word32Equal(kind, Int32Constant(kData)), &return_undefined);
+      Return(var_value.value());
+    }
+  }
+
+  BIND(&return_undefined);
+  Return(UndefinedConstant());
+}
+
+#include "src/codegen/undef-code-stub-assembler-macros.inc"
 
 }  // namespace v8::internal

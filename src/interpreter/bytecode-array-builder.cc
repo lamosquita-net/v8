@@ -4,6 +4,8 @@
 
 #include "src/interpreter/bytecode-array-builder.h"
 
+#include <optional>
+
 #include "src/ast/scopes.h"
 #include "src/ast/variables.h"
 #include "src/common/assert-scope.h"
@@ -201,7 +203,7 @@ void BytecodeArrayBuilder::OutputLdarRaw(Register reg) {
 
 void BytecodeArrayBuilder::OutputStarRaw(Register reg) {
   uint32_t operand = static_cast<uint32_t>(reg.ToOperand());
-  base::Optional<Bytecode> short_code = reg.TryToShortStar();
+  std::optional<Bytecode> short_code = reg.TryToShortStar();
   BytecodeNode node = short_code
                           ? BytecodeNode(*short_code)
                           : BytecodeNode::Star(BytecodeSourceInfo(), operand);
@@ -388,7 +390,7 @@ class BytecodeNodeBuilder {
     BytecodeNode node(Create##name##Node(operands...));               \
     WriteJump(&node, label);                                          \
   }
-BYTECODE_LIST(DEFINE_BYTECODE_OUTPUT)
+BYTECODE_LIST(DEFINE_BYTECODE_OUTPUT, DEFINE_BYTECODE_OUTPUT)
 #undef DEFINE_BYTECODE_OUTPUT
 
 void BytecodeArrayBuilder::OutputJumpLoop(BytecodeLoopHeader* loop_header,
@@ -653,6 +655,13 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::LoadLiteral(double value) {
 BytecodeArrayBuilder& BytecodeArrayBuilder::LoadLiteral(
     const AstRawString* raw_string) {
   size_t entry = GetConstantPoolEntry(raw_string);
+  OutputLdaConstant(entry);
+  return *this;
+}
+
+BytecodeArrayBuilder& BytecodeArrayBuilder::LoadLiteral(
+    const AstConsString* cons_string) {
+  size_t entry = GetConstantPoolEntry(cons_string);
   OutputLdaConstant(entry);
   return *this;
 }
@@ -1596,6 +1605,11 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::Delete(Register object,
 size_t BytecodeArrayBuilder::GetConstantPoolEntry(
     const AstRawString* raw_string) {
   return constant_array_builder()->Insert(raw_string);
+}
+
+size_t BytecodeArrayBuilder::GetConstantPoolEntry(
+    const AstConsString* cons_string) {
+  return constant_array_builder()->Insert(cons_string);
 }
 
 size_t BytecodeArrayBuilder::GetConstantPoolEntry(AstBigInt bigint) {

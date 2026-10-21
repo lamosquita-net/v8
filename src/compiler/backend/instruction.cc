@@ -16,9 +16,9 @@
 #include "src/compiler/backend/instruction-codes.h"
 #include "src/compiler/common-operator.h"
 #include "src/compiler/frame-states.h"
-#include "src/compiler/graph.h"
 #include "src/compiler/node.h"
 #include "src/compiler/schedule.h"
+#include "src/compiler/turbofan-graph.h"
 #include "src/compiler/turboshaft/graph.h"
 #include "src/compiler/turboshaft/loop-finder.h"
 #include "src/compiler/turboshaft/operations.h"
@@ -1039,8 +1039,9 @@ static MachineRepresentation FilterRepresentation(MachineRepresentation rep) {
     case MachineRepresentation::kBit:
     case MachineRepresentation::kWord8:
     case MachineRepresentation::kWord16:
-    case MachineRepresentation::kFloat16:
       return InstructionSequence::DefaultRepresentation();
+    case MachineRepresentation::kFloat16:
+      return MachineRepresentation::kFloat32;
     case MachineRepresentation::kWord32:
     case MachineRepresentation::kWord64:
     case MachineRepresentation::kTaggedSigned:
@@ -1313,7 +1314,7 @@ JSToWasmFrameStateDescriptor::JSToWasmFrameStateDescriptor(
     OutputFrameStateCombine state_combine, uint16_t parameters_count,
     size_t locals_count, size_t stack_count,
     MaybeHandle<SharedFunctionInfo> shared_info,
-    FrameStateDescriptor* outer_state, const wasm::FunctionSig* wasm_signature)
+    FrameStateDescriptor* outer_state, const wasm::CanonicalSig* wasm_signature)
     : FrameStateDescriptor(zone, type, bailout_id, state_combine,
                            parameters_count, 0, locals_count, stack_count,
                            shared_info, outer_state),

@@ -5,6 +5,7 @@
 #include "src/compiler/simplified-lowering.h"
 
 #include <limits>
+#include <optional>
 
 #include "include/v8-fast-api-calls.h"
 #include "src/base/small-vector.h"
@@ -15,7 +16,6 @@
 #include "src/compiler/common-operator.h"
 #include "src/compiler/compiler-source-position-table.h"
 #include "src/compiler/diamond.h"
-#include "src/compiler/graph-visualizer.h"
 #include "src/compiler/js-heap-broker.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/node-matchers.h"
@@ -26,6 +26,7 @@
 #include "src/compiler/representation-change.h"
 #include "src/compiler/simplified-lowering-verifier.h"
 #include "src/compiler/simplified-operator.h"
+#include "src/compiler/turbofan-graph-visualizer.h"
 #include "src/compiler/type-cache.h"
 #include "src/numbers/conversions-inl.h"
 #include "src/objects/objects.h"
@@ -241,7 +242,7 @@ class JSONGraphWriterWithVerifierTypes : public JSONGraphWriter {
       : JSONGraphWriter(os, graph, positions, origins), verifier_(verifier) {}
 
  protected:
-  base::Optional<Type> GetType(Node* node) override {
+  std::optional<Type> GetType(Node* node) override {
     return verifier_->GetType(node);
   }
 
@@ -1948,6 +1949,11 @@ class RepresentationSelector {
         if (flags & uint8_t(CTypeInfo::Flags::kEnforceRangeBit) ||
             flags & uint8_t(CTypeInfo::Flags::kClampBit)) {
           DCHECK(repr != CFunctionInfo::Int64Representation::kBigInt);
+          // If the parameter is marked as `kEnforceRange` or `kClampBit`, then
+          // special type conversion gets added explicitly to the generated
+          // code. Therefore it is sufficient here to only require here that the
+          // value is a Float64, even though the C++ signature actually asks for
+          // an `int32_t`.
           return UseInfo::CheckedNumberAsFloat64(kIdentifyZeros, feedback);
         }
         switch (type.GetType()) {
@@ -2206,7 +2212,7 @@ class RepresentationSelector {
     JSWasmCallNode n(node);
 
     JSWasmCallParameters const& params = n.Parameters();
-    const wasm::FunctionSig* wasm_signature = params.signature();
+    const wasm::CanonicalSig* wasm_signature = params.signature();
     int wasm_arg_count = static_cast<int>(wasm_signature->parameter_count());
     DCHECK_EQ(wasm_arg_count, n.ArgumentCount());
 
@@ -2352,6 +2358,8 @@ class RepresentationSelector {
         return;
       }
       case IrOpcode::kHeapConstant:
+        return VisitLeaf<T>(node, MachineRepresentation::kTaggedPointer);
+      case IrOpcode::kTrustedHeapConstant:
         return VisitLeaf<T>(node, MachineRepresentation::kTaggedPointer);
       case IrOpcode::kPointerConstant: {
         VisitLeaf<T>(node, MachineType::PointerRepresentation());

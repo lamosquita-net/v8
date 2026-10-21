@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <optional>
+
 #include "src/base/small-vector.h"
 #include "src/codegen/bailout-reason.h"
 #include "src/codegen/interface-descriptors-inl.h"
@@ -12,6 +14,7 @@
 #include "src/wasm/turboshaft-graph-interface.h"
 #include "src/wasm/wasm-engine.h"
 #include "src/wasm/wasm-module.h"
+#include "src/wasm/wasm-objects.h"
 #include "src/zone/zone.h"
 
 namespace v8::internal::wasm {
@@ -40,8 +43,7 @@ using compiler::turboshaft::Word32;
 using compiler::turboshaft::WordPtr;
 
 namespace {
-const TSCallDescriptor* GetBuiltinCallDescriptor(Builtin name, Zone* zone,
-                                                 StubCallMode stub_mode) {
+const TSCallDescriptor* GetBuiltinCallDescriptor(Builtin name, Zone* zone) {
   CallInterfaceDescriptor interface_descriptor =
       Builtins::CallInterfaceDescriptorFor(name);
   CallDescriptor* call_desc = compiler::Linkage::GetStubCallDescriptor(
@@ -50,7 +52,7 @@ const TSCallDescriptor* GetBuiltinCallDescriptor(Builtin name, Zone* zone,
       interface_descriptor.GetStackParameterCount(),  // stack parameter count
       CallDescriptor::kNoFlags,                       // flags
       compiler::Operator::kNoProperties,              // properties
-      stub_mode);                                     // stub call mode
+      StubCallMode::kCallBuiltinPointer);             // stub call mode
   return TSCallDescriptor::Create(call_desc, compiler::CanThrow::kNo,
                                   compiler::LazyDeoptOnThrow::kNo, zone);
 }
@@ -59,13 +61,8 @@ const TSCallDescriptor* GetBuiltinCallDescriptor(Builtin name, Zone* zone,
 class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
  public:
   WasmWrapperTSGraphBuilder(Zone* zone, Assembler& assembler,
-                            const WasmModule* module,
-                            const wasm::FunctionSig* sig,
-                            StubCallMode stub_mode)
-      : WasmGraphBuilderBase(zone, assembler),
-        module_(module),
-        sig_(sig),
-        stub_mode_(stub_mode) {}
+                            const CanonicalSig* sig, StubCallMode stub_mode)
+      : WasmGraphBuilderBase(zone, assembler), sig_(sig) {}
 
   void AbortIfNot(V<Word32> condition, AbortReason abort_reason) {
     if (!v8_flags.debug_code) return;
@@ -125,7 +122,8 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
   }
 
   V<WordPtr> GetTargetForBuiltinCall(Builtin builtin) {
-    return WasmGraphBuilderBase::GetTargetForBuiltinCall(builtin, stub_mode_);
+    return WasmGraphBuilderBase::GetTargetForBuiltinCall(
+        builtin, StubCallMode::kCallBuiltinPointer);
   }
 
   template <typename Descriptor, typename... Args>
@@ -135,7 +133,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
         __ graph_zone(), Descriptor(), 0,
         frame_state.valid() ? CallDescriptor::kNeedsFrameState
                             : CallDescriptor::kNoFlags,
-        Operator::kNoProperties, stub_mode_);
+        Operator::kNoProperties, StubCallMode::kCallBuiltinPointer);
     const TSCallDescriptor* ts_call_descriptor = TSCallDescriptor::Create(
         call_descriptor, compiler::CanThrow::kNo,
         compiler::LazyDeoptOnThrow::kNo, __ graph_zone());
@@ -149,7 +147,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
                       Args... args) {
     auto call_descriptor = compiler::Linkage::GetStubCallDescriptor(
         __ graph_zone(), Descriptor(), 0, CallDescriptor::kNoFlags,
-        Operator::kNoProperties, stub_mode_);
+        Operator::kNoProperties, StubCallMode::kCallBuiltinPointer);
     const TSCallDescriptor* ts_call_descriptor = TSCallDescriptor::Create(
         call_descriptor, compiler::CanThrow::kNo,
         compiler::LazyDeoptOnThrow::kNo, __ graph_zone());
@@ -192,41 +190,41 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
         Builtin::kWasmFloat64ToNumber, Operator::kNoProperties, value);
   }
 
-  V<Object> ToJS(OpIndex ret, ValueType type, V<Context> context) {
+  V<Object> ToJS(OpIndex ret, CanonicalValueType type, V<Context> context) {
     switch (type.kind()) {
-      case wasm::kI32:
+      case kI32:
         return BuildChangeInt32ToNumber(ret);
-      case wasm::kI64:
-        return BuildChangeInt64ToBigInt(ret, stub_mode_);
-      case wasm::kF32:
+      case kI64:
+        return BuildChangeInt64ToBigInt(ret, StubCallMode::kCallBuiltinPointer);
+      case kF32:
         return BuildChangeFloat32ToNumber(ret);
-      case wasm::kF64:
+      case kF64:
         return BuildChangeFloat64ToNumber(ret);
-      case wasm::kRef:
+      case kRef:
         switch (type.heap_representation_non_shared()) {
-          case wasm::HeapType::kEq:
-          case wasm::HeapType::kI31:
-          case wasm::HeapType::kStruct:
-          case wasm::HeapType::kArray:
-          case wasm::HeapType::kAny:
-          case wasm::HeapType::kExtern:
-          case wasm::HeapType::kString:
-          case wasm::HeapType::kNone:
-          case wasm::HeapType::kNoFunc:
-          case wasm::HeapType::kNoExtern:
-          case wasm::HeapType::kExn:
-          case wasm::HeapType::kNoExn:
+          case HeapType::kEq:
+          case HeapType::kI31:
+          case HeapType::kStruct:
+          case HeapType::kArray:
+          case HeapType::kAny:
+          case HeapType::kExtern:
+          case HeapType::kString:
+          case HeapType::kNone:
+          case HeapType::kNoFunc:
+          case HeapType::kNoExtern:
+          case HeapType::kExn:
+          case HeapType::kNoExn:
             return ret;
-          case wasm::HeapType::kBottom:
-          case wasm::HeapType::kStringViewWtf8:
-          case wasm::HeapType::kStringViewWtf16:
-          case wasm::HeapType::kStringViewIter:
+          case HeapType::kBottom:
+          case HeapType::kTop:
+          case HeapType::kStringViewWtf8:
+          case HeapType::kStringViewWtf16:
+          case HeapType::kStringViewIter:
             UNREACHABLE();
-          case wasm::HeapType::kFunc:
+          case HeapType::kFunc:
           default:
-            if (type.heap_representation_non_shared() ==
-                    wasm::HeapType::kFunc ||
-                module_->has_signature(type.ref_index())) {
+            if (type.heap_representation_non_shared() == HeapType::kFunc ||
+                GetTypeCanonicalizer()->IsFunctionSignature(type.ref_index())) {
               // Function reference. Extract the external function.
               V<WasmInternalFunction> internal =
                   V<WasmInternalFunction>::Cast(__ LoadTrustedPointerField(
@@ -248,22 +246,22 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
               return ret;
             }
         }
-      case wasm::kRefNull:
+      case kRefNull:
         switch (type.heap_representation_non_shared()) {
-          case wasm::HeapType::kExtern:
-          case wasm::HeapType::kNoExtern:
-          case wasm::HeapType::kExn:
-          case wasm::HeapType::kNoExn:
+          case HeapType::kExtern:
+          case HeapType::kNoExtern:
+          case HeapType::kExn:
+          case HeapType::kNoExn:
             return ret;
-          case wasm::HeapType::kNone:
-          case wasm::HeapType::kNoFunc:
+          case HeapType::kNone:
+          case HeapType::kNoFunc:
             return LOAD_ROOT(NullValue);
-          case wasm::HeapType::kEq:
-          case wasm::HeapType::kStruct:
-          case wasm::HeapType::kArray:
-          case wasm::HeapType::kString:
-          case wasm::HeapType::kI31:
-          case wasm::HeapType::kAny: {
+          case HeapType::kEq:
+          case HeapType::kStruct:
+          case HeapType::kArray:
+          case HeapType::kString:
+          case HeapType::kI31:
+          case HeapType::kAny: {
             ScopedVar<Object> result(this, OpIndex::Invalid());
             IF_NOT (__ TaggedEqual(ret, LOAD_ROOT(WasmNull))) {
               result = ret;
@@ -272,11 +270,10 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
             }
             return result;
           }
-          case wasm::HeapType::kFunc:
+          case HeapType::kFunc:
           default: {
-            if (type.heap_representation_non_shared() ==
-                    wasm::HeapType::kFunc ||
-                module_->has_signature(type.ref_index())) {
+            if (type.heap_representation_non_shared() == HeapType::kFunc ||
+                GetTypeCanonicalizer()->IsFunctionSignature(type.ref_index())) {
               ScopedVar<Object> result(this, OpIndex::Invalid());
               IF (__ TaggedEqual(ret, LOAD_ROOT(WasmNull))) {
                 result = LOAD_ROOT(NullValue);
@@ -312,13 +309,14 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
             }
           }
         }
-      case wasm::kRtt:
-      case wasm::kI8:
-      case wasm::kI16:
-      case wasm::kF16:
-      case wasm::kS128:
-      case wasm::kVoid:
-      case wasm::kBottom:
+      case kRtt:
+      case kI8:
+      case kI16:
+      case kF16:
+      case kS128:
+      case kVoid:
+      case kTop:
+      case kBottom:
         // If this is reached, then IsJSCompatibleSignature() is too permissive.
         UNREACHABLE();
     }
@@ -329,15 +327,15 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
                                       V<Object> context) {
     // Since we don't check that args will fit in an array,
     // we make sure this is true based on statically known limits.
-    static_assert(wasm::kV8MaxWasmFunctionReturns <=
+    static_assert(kV8MaxWasmFunctionReturns <=
                   JSArray::kInitialMaxFastElementArray);
     return CallBuiltin<WasmAllocateJSArrayDescriptor>(
         Builtin::kWasmAllocateJSArray, Operator::kEliminatable, array_length,
         context);
   }
 
-  void BuildCallWasmFromWrapper(Zone* zone, const FunctionSig* sig,
-                                V<WordPtr> callee,
+  void BuildCallWasmFromWrapper(Zone* zone, const CanonicalSig* sig,
+                                V<WasmCodePtr> callee,
                                 V<HeapObject> implicit_first_arg,
                                 base::SmallVector<OpIndex, 16> args,
                                 base::SmallVector<OpIndex, 1>& returns) {
@@ -354,7 +352,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
       returns[0] = call;
     } else if (sig->return_count() > 1) {
       for (uint32_t i = 0; i < sig->return_count(); i++) {
-        wasm::ValueType type = sig->GetReturn(i);
+        ValueType type = sig->GetReturn(i);
         returns[i] = __ Projection(call, i, RepresentationFor(type));
       }
     }
@@ -369,7 +367,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
 
     // Set the ThreadInWasm flag before we do the actual call.
     {
-      base::Optional<ModifyThreadInWasmFlagScope>
+      std::optional<ModifyThreadInWasmFlagScope>
           modify_thread_in_wasm_flag_builder;
       if (set_in_wasm_flag) {
         modify_thread_in_wasm_flag_builder.emplace(this, Asm());
@@ -379,9 +377,10 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
           V<WasmInternalFunction>::Cast(__ LoadProtectedPointerField(
               function_data, LoadOp::Kind::TaggedBase().Immutable(),
               WasmExportedFunctionData::kProtectedInternalOffset));
-      auto [target, ref] =
-          BuildFunctionTargetAndRef(internal, expected_sig_hash);
-      BuildCallWasmFromWrapper(__ phase_zone(), sig_, target, ref, args, rets);
+      auto [target, implicit_arg] =
+          BuildFunctionTargetAndImplicitArg(internal, expected_sig_hash);
+      BuildCallWasmFromWrapper(__ phase_zone(), sig_, target, implicit_arg,
+                               args, rets);
     }
 
     V<Object> jsval;
@@ -429,20 +428,18 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
         __ Load(js_closure, LoadOp::Kind::TaggedBase(),
                 MemoryRepresentation::TaggedPointer(),
                 JSFunction::kSharedFunctionInfoOffset);
-#if V8_ENABLE_SANDBOX
-    static constexpr int kOffset =
-        SharedFunctionInfo::kTrustedFunctionDataOffset;
+#ifdef V8_ENABLE_SANDBOX
     uint64_t signature_hash = SignatureHasher::Hash(sig_);
 #else
-    static constexpr int kOffset = SharedFunctionInfo::kFunctionDataOffset;
     uint64_t signature_hash = 0;
 #endif
     V<WasmFunctionData> function_data =
         V<WasmFunctionData>::Cast(__ LoadTrustedPointerField(
             shared, LoadOp::Kind::TaggedBase(),
-            kWasmFunctionDataIndirectPointerTag, kOffset));
+            kWasmFunctionDataIndirectPointerTag,
+            SharedFunctionInfo::kTrustedFunctionDataOffset));
 
-    if (!wasm::IsJSCompatibleSignature(sig_)) {
+    if (!IsJSCompatibleSignature(sig_)) {
       // Throw a TypeError. Use the js_context of the calling javascript
       // function (passed as a parameter), such that the generated code is
       // js_context independent.
@@ -495,8 +492,8 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
     base::SmallVector<OpIndex, 16> args(args_count);
     for (int i = 0; i < wasm_param_count; ++i) {
       if (do_conversion) {
-        args[i + 1] = FromJS(params[i + 1], js_context, sig_->GetParam(i),
-                             module_, frame_state);
+        args[i + 1] =
+            FromJS(params[i + 1], js_context, sig_->GetParam(i), frame_state);
       } else {
         OpIndex wasm_param = params[i + 1];
 
@@ -504,7 +501,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
         // we set UseInfo::CheckedNumberOrOddballAsFloat64 in
         // simplified-lowering and we need to add here a conversion from Float64
         // to Float32.
-        if (sig_->GetParam(i).kind() == wasm::kF32) {
+        if (sig_->GetParam(i).kind() == kF32) {
           wasm_param = __ TruncateFloat64ToFloat32(wasm_param);
         }
         args[i + 1] = wasm_param;
@@ -524,29 +521,23 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
     }
   }
 
-  void BuildWasmToJSWrapper(wasm::ImportCallKind kind, int expected_arity,
-                            wasm::Suspend suspend, const WasmModule* module) {
-    int suspender_count = suspend == kSuspendWithSuspender ? 1 : 0;
-    int wasm_count =
-        static_cast<int>(sig_->parameter_count()) - suspender_count;
+  void BuildWasmToJSWrapper(ImportCallKind kind, int expected_arity,
+                            Suspend suspend) {
+    int wasm_count = static_cast<int>(sig_->parameter_count());
 
     __ Bind(__ NewBlock());
     base::SmallVector<OpIndex, 16> wasm_params(wasm_count);
     OpIndex ref = __ Parameter(0, RegisterRepresentation::Tagged());
-    V<HeapObject> suspender =
-        suspender_count == 1 ? __ Parameter(1, RegisterRepresentation::Tagged())
-                             : OpIndex::Invalid();
     for (int i = 0; i < wasm_count; ++i) {
-      RegisterRepresentation rep =
-          RepresentationFor(sig_->GetParam(i + suspender_count));
-      wasm_params[i] = (__ Parameter(1 + suspender_count + i, rep));
+      RegisterRepresentation rep = RepresentationFor(sig_->GetParam(i));
+      wasm_params[i] = (__ Parameter(1 + i, rep));
     }
 
-    V<Context> native_context = __ Load(
-        ref, LoadOp::Kind::TaggedBase(), MemoryRepresentation::TaggedPointer(),
-        WasmApiFunctionRef::kNativeContextOffset);
+    V<Context> native_context = __ Load(ref, LoadOp::Kind::TaggedBase(),
+                                        MemoryRepresentation::TaggedPointer(),
+                                        WasmImportData::kNativeContextOffset);
 
-    if (kind == wasm::ImportCallKind::kRuntimeTypeError) {
+    if (kind == ImportCallKind::kRuntimeTypeError) {
       // =======================================================================
       // === Runtime TypeError =================================================
       // =======================================================================
@@ -561,17 +552,15 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
     base::SmallVector<OpIndex, 16> args(pushed_count + 4);
     // Position of the first wasm argument in the JS arguments.
     int pos = kind == ImportCallKind::kUseCallBuiltin ? 3 : 1;
-    // If {suspender_count} is 1, {wasm_count} includes the suspender argument,
-    // which is dropped in {AddArgumentNodes}.
     pos = AddArgumentNodes(base::VectorOf(args), pos, wasm_params, sig_,
-                           native_context, suspender_count);
+                           native_context);
     for (int i = wasm_count; i < expected_arity; ++i) {
       args[pos++] = undefined_node;
     }
 
     V<JSFunction> callable_node = __ Load(ref, LoadOp::Kind::TaggedBase(),
                                           MemoryRepresentation::TaggedPointer(),
-                                          WasmApiFunctionRef::kCallableOffset);
+                                          WasmImportData::kCallableOffset);
     OpIndex old_sp = BuildSwitchToTheCentralStackIfNeeded();
     BuildModifyThreadInWasmFlag(__ phase_zone(), false);
     OpIndex call = OpIndex::Invalid();
@@ -579,10 +568,10 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
       // =======================================================================
       // === JS Functions ======================================================
       // =======================================================================
-      case wasm::ImportCallKind::kJSFunctionArityMatch:
+      case ImportCallKind::kJSFunctionArityMatch:
         DCHECK_EQ(expected_arity, wasm_count);
         [[fallthrough]];
-      case wasm::ImportCallKind::kJSFunctionArityMismatch: {
+      case ImportCallKind::kJSFunctionArityMismatch: {
         auto call_descriptor = compiler::Linkage::GetJSCallDescriptor(
             __ graph_zone(), false, pushed_count + 1, CallDescriptor::kNoFlags);
         const TSCallDescriptor* ts_call_descriptor = TSCallDescriptor::Create(
@@ -604,7 +593,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
       // =======================================================================
       // === General case of unknown callable ==================================
       // =======================================================================
-      case wasm::ImportCallKind::kUseCallBuiltin: {
+      case ImportCallKind::kUseCallBuiltin: {
         DCHECK_EQ(expected_arity, wasm_count);
         OpIndex target = GetBuiltinPointerTarget(Builtin::kCall_ReceiverIsAny);
         args[0] = callable_node;
@@ -643,9 +632,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
     DCHECK(call.valid());
 
     if (suspend == kSuspend) {
-      call = BuildSuspend(call, LOAD_ROOT(ActiveSuspender), ref, &old_sp);
-    } else if (suspend == kSuspendWithSuspender) {
-      call = BuildSuspend(call, suspender, ref, &old_sp);
+      call = BuildSuspend(call, ref, &old_sp);
     }
 
     // Convert the return value(s) back.
@@ -654,20 +641,18 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
     if (sig_->return_count() <= 1) {
       val = sig_->return_count() == 0
                 ? __ Word32Constant(0)
-                : FromJS(call, native_context, sig_->GetReturn(), module);
+                : FromJS(call, native_context, sig_->GetReturn());
     } else {
       V<FixedArray> fixed_array =
           BuildMultiReturnFixedArrayFromIterable(call, native_context);
       wasm_values.resize_no_init(sig_->return_count());
       for (unsigned i = 0; i < sig_->return_count(); ++i) {
         wasm_values[i] = FromJS(__ LoadFixedArrayElement(fixed_array, i),
-                                native_context, sig_->GetReturn(i), module);
+                                native_context, sig_->GetReturn(i));
       }
     }
     BuildModifyThreadInWasmFlag(__ phase_zone(), true);
-    IF_NOT (LIKELY(__ WordPtrEqual(old_sp, __ IntPtrConstant(0)))) {
-      BuildSwitchBackFromCentralStack(old_sp);
-    }
+    BuildSwitchBackFromCentralStack(old_sp);
     if (sig_->return_count() <= 1) {
       __ Return(val);
     } else {
@@ -675,7 +660,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
     }
   }
 
-  void BuildCapiCallWrapper(const WasmModule* module) {
+  void BuildCapiCallWrapper() {
     __ Bind(__ NewBlock());
     base::SmallVector<OpIndex, 8> incoming_params;
     // Instance.
@@ -688,11 +673,11 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
     }
     // Store arguments on our stack, then align the stack for calling to C.
     int param_bytes = 0;
-    for (wasm::ValueType type : sig_->parameters()) {
+    for (ValueType type : sig_->parameters()) {
       param_bytes += type.value_kind_size();
     }
     int return_bytes = 0;
-    for (wasm::ValueType type : sig_->returns()) {
+    for (ValueType type : sig_->returns()) {
       return_bytes += type.value_kind_size();
     }
 
@@ -703,7 +688,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
 
     int offset = 0;
     for (size_t i = 0; i < sig_->parameter_count(); ++i) {
-      wasm::ValueType type = sig_->GetParam(i);
+      ValueType type = sig_->GetParam(i);
       // Start from the parameter with index 1 to drop the instance_node.
       // TODO(jkummerow): When a values is a reference type, we should pass it
       // in a GC-safe way, not just as a raw pointer.
@@ -711,19 +696,14 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
       offset += type.value_kind_size();
     }
 
-    V<Object> function_node = __ LoadTaggedField(
-        incoming_params[0], WasmApiFunctionRef::kCallableOffset);
+    V<Object> function_node =
+        __ LoadTaggedField(incoming_params[0], WasmImportData::kCallableOffset);
     V<HeapObject> shared = LoadSharedFunctionInfo(function_node);
-#if V8_ENABLE_SANDBOX
-    static constexpr int kOffset =
-        SharedFunctionInfo::kTrustedFunctionDataOffset;
-#else
-    static constexpr int kOffset = SharedFunctionInfo::kFunctionDataOffset;
-#endif
     V<WasmFunctionData> function_data =
         V<WasmFunctionData>::Cast(__ LoadTrustedPointerField(
             shared, LoadOp::Kind::TaggedBase(),
-            kWasmFunctionDataIndirectPointerTag, kOffset));
+            kWasmFunctionDataIndirectPointerTag,
+            SharedFunctionInfo::kTrustedFunctionDataOffset));
     V<Object> host_data_foreign = __ LoadTaggedField(
         function_data, WasmCapiFunctionData::kEmbedderDataOffset);
 
@@ -752,7 +732,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
           __ graph_zone(), interface_descriptor,
           interface_descriptor.GetStackParameterCount(),
           CallDescriptor::kNoFlags, Operator::kNoProperties,
-          StubCallMode::kCallWasmRuntimeStub);
+          StubCallMode::kCallBuiltinPointer);
       const TSCallDescriptor* ts_call_descriptor = TSCallDescriptor::Create(
           call_descriptor, compiler::CanThrow::kYes,
           compiler::LazyDeoptOnThrow::kNo, __ graph_zone());
@@ -761,12 +741,12 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
       V<Context> context =
           __ Load(incoming_params[0], LoadOp::Kind::TaggedBase(),
                   MemoryRepresentation::TaggedPointer(),
-                  WasmApiFunctionRef::kNativeContextOffset);
+                  WasmImportData::kNativeContextOffset);
       __ Call(call_target, {return_value, context}, ts_call_descriptor);
       __ Unreachable();
     }
 
-    DCHECK_LT(sig_->return_count(), wasm::kV8MaxWasmFunctionReturns);
+    DCHECK_LT(sig_->return_count(), kV8MaxWasmFunctionReturns);
     size_t return_count = sig_->return_count();
     if (return_count == 0) {
       __ Return(__ Word32Constant(0));
@@ -774,7 +754,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
       base::SmallVector<OpIndex, 8> returns(return_count);
       offset = 0;
       for (size_t i = 0; i < return_count; ++i) {
-        wasm::ValueType type = sig_->GetReturn(i);
+        ValueType type = sig_->GetReturn(i);
         OpIndex val = SafeLoad(values, offset, type);
         returns[i] = val;
         offset += type.value_kind_size();
@@ -805,11 +785,11 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
         input, compiler::AccessBuilder::ForHeapNumberValue());
   }
 
-  OpIndex FromJSFast(OpIndex input, wasm::ValueType type) {
+  OpIndex FromJSFast(OpIndex input, ValueType type) {
     switch (type.kind()) {
-      case wasm::kI32:
+      case kI32:
         return BuildChangeSmiToInt32(input);
-      case wasm::kF32: {
+      case kF32: {
         ScopedVar<Float32> result(this, OpIndex::Invalid());
         IF (__ IsSmi(input)) {
           result = __ ChangeInt32ToFloat32(__ UntagSmi(input));
@@ -818,7 +798,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
         }
         return result;
       }
-      case wasm::kF64: {
+      case kF64: {
         ScopedVar<Float64> result(this, OpIndex::Invalid());
         IF (__ IsSmi(input)) {
           result = __ ChangeInt32ToFloat64(__ UntagSmi(input));
@@ -827,16 +807,17 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
         }
         return result;
       }
-      case wasm::kRef:
-      case wasm::kRefNull:
-      case wasm::kI64:
-      case wasm::kRtt:
-      case wasm::kS128:
-      case wasm::kI8:
-      case wasm::kI16:
-      case wasm::kF16:
-      case wasm::kBottom:
-      case wasm::kVoid:
+      case kRef:
+      case kRefNull:
+      case kI64:
+      case kRtt:
+      case kS128:
+      case kI8:
+      case kI16:
+      case kF16:
+      case kTop:
+      case kBottom:
+      case kVoid:
         UNREACHABLE();
     }
   }
@@ -914,8 +895,8 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
   }
 
   CallDescriptor* GetBigIntToI64CallDescriptor(bool needs_frame_state) {
-    return wasm::GetWasmEngine()->call_descriptors()->GetBigIntToI64Descriptor(
-        stub_mode_, needs_frame_state);
+    return GetWasmEngine()->call_descriptors()->GetBigIntToI64Descriptor(
+        needs_frame_state);
   }
 
   OpIndex BuildChangeBigIntToInt64(
@@ -943,17 +924,15 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
   }
 
   OpIndex FromJS(OpIndex input, OpIndex context, ValueType type,
-                 const WasmModule* module, OptionalOpIndex frame_state = {}) {
+                 OptionalOpIndex frame_state = {}) {
     switch (type.kind()) {
-      case wasm::kRef:
-      case wasm::kRefNull: {
+      case kRef:
+      case kRefNull: {
         switch (type.heap_representation_non_shared()) {
           // TODO(14034): Add more fast paths?
-          case wasm::HeapType::kExtern:
-          case wasm::HeapType::kNoExtern:
-          case wasm::HeapType::kExn:
-          case wasm::HeapType::kNoExn:
-            if (type.kind() == wasm::kRef) {
+          case HeapType::kExtern:
+          case HeapType::kExn:
+            if (type.kind() == kRef) {
               IF (UNLIKELY(__ TaggedEqual(input, LOAD_ROOT(NullValue)))) {
                 CallRuntime(__ phase_zone(), Runtime::kWasmThrowJSTypeError, {},
                             context);
@@ -961,59 +940,52 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
               }
             }
             return input;
-          case wasm::HeapType::kString:
+          case HeapType::kString:
             return BuildCheckString(input, context, type);
-          case wasm::HeapType::kNone:
-          case wasm::HeapType::kNoFunc:
-          case wasm::HeapType::kI31:
-          case wasm::HeapType::kAny:
-          case wasm::HeapType::kFunc:
-          case wasm::HeapType::kStruct:
-          case wasm::HeapType::kArray:
-          case wasm::HeapType::kEq:
+          case HeapType::kNoExtern:
+          case HeapType::kNoExn:
+          case HeapType::kNone:
+          case HeapType::kNoFunc:
+          case HeapType::kI31:
+          case HeapType::kAny:
+          case HeapType::kFunc:
+          case HeapType::kStruct:
+          case HeapType::kArray:
+          case HeapType::kEq:
           default: {
             // Make sure ValueType fits in a Smi.
-            static_assert(wasm::ValueType::kLastUsedBit + 1 <= kSmiValueSize);
-
-            uint32_t canonical_index = kInvalidCanonicalIndex;
-            if (type.has_index()) {
-              DCHECK_NOT_NULL(module);
-              canonical_index =
-                  module->isorecursive_canonical_type_ids[type.ref_index()];
-              DCHECK_LE(canonical_index, kSmiMaxValue);
-            }
+            static_assert(ValueType::kLastUsedBit + 1 <= kSmiValueSize);
 
             std::initializer_list<const OpIndex> inputs = {
-                input,
-                __ IntPtrConstant(
-                    IntToSmi(static_cast<int>(type.raw_bit_field()))),
-                __ IntPtrConstant(IntToSmi(static_cast<int>(canonical_index)))};
+                input, __ IntPtrConstant(
+                           IntToSmi(static_cast<int>(type.raw_bit_field())))};
             return CallRuntime(__ phase_zone(), Runtime::kWasmJSToWasmObject,
                                inputs, context);
           }
         }
       }
-      case wasm::kF32:
+      case kF32:
         return __ TruncateFloat64ToFloat32(
             BuildChangeTaggedToFloat64(input, context, frame_state));
 
-      case wasm::kF64:
+      case kF64:
         return BuildChangeTaggedToFloat64(input, context, frame_state);
 
-      case wasm::kI32:
+      case kI32:
         return BuildChangeTaggedToInt32(input, context, frame_state);
 
-      case wasm::kI64:
+      case kI64:
         // i64 values can only come from BigInt.
         return BuildChangeBigIntToInt64(input, context, frame_state);
 
-      case wasm::kRtt:
-      case wasm::kS128:
-      case wasm::kI8:
-      case wasm::kI16:
-      case wasm::kF16:
-      case wasm::kBottom:
-      case wasm::kVoid:
+      case kRtt:
+      case kS128:
+      case kI8:
+      case kI16:
+      case kF16:
+      case kTop:
+      case kBottom:
+      case kVoid:
         // If this is reached, then IsJSCompatibleSignature() is too permissive.
         UNREACHABLE();
     }
@@ -1022,22 +994,23 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
   bool QualifiesForFastTransform() {
     const int wasm_count = static_cast<int>(sig_->parameter_count());
     for (int i = 0; i < wasm_count; ++i) {
-      wasm::ValueType type = sig_->GetParam(i);
+      ValueType type = sig_->GetParam(i);
       switch (type.kind()) {
-        case wasm::kRef:
-        case wasm::kRefNull:
-        case wasm::kI64:
-        case wasm::kRtt:
-        case wasm::kS128:
-        case wasm::kI8:
-        case wasm::kI16:
-        case wasm::kF16:
-        case wasm::kBottom:
-        case wasm::kVoid:
+        case kRef:
+        case kRefNull:
+        case kI64:
+        case kRtt:
+        case kS128:
+        case kI8:
+        case kI16:
+        case kF16:
+        case kTop:
+        case kBottom:
+        case kVoid:
           return false;
-        case wasm::kI32:
-        case wasm::kF32:
-        case wasm::kF64:
+        case kI32:
+        case kF32:
+        case kF64:
           break;
       }
     }
@@ -1066,15 +1039,14 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
 #endif
   }
 
-  void CanTransformFast(OpIndex input, wasm::ValueType type,
-                        TSBlock* slow_path) {
+  void CanTransformFast(OpIndex input, ValueType type, TSBlock* slow_path) {
     switch (type.kind()) {
-      case wasm::kI32: {
+      case kI32: {
         __ GotoIfNot(LIKELY(__ IsSmi(input)), slow_path);
         return;
       }
-      case wasm::kF32:
-      case wasm::kF64: {
+      case kF32:
+      case kF64: {
         TSBlock* done = __ NewBlock();
         __ GotoIf(__ IsSmi(input), done);
         V<Map> map = LoadMap(input);
@@ -1086,16 +1058,17 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
         __ Bind(done);
         return;
       }
-      case wasm::kRef:
-      case wasm::kRefNull:
-      case wasm::kI64:
-      case wasm::kRtt:
-      case wasm::kS128:
-      case wasm::kI8:
-      case wasm::kI16:
-      case wasm::kF16:
-      case wasm::kBottom:
-      case wasm::kVoid:
+      case kRef:
+      case kRefNull:
+      case kI64:
+      case kRtt:
+      case kS128:
+      case kI8:
+      case kI16:
+      case kF16:
+      case kTop:
+      case kBottom:
+      case kVoid:
         UNREACHABLE();
     }
   }
@@ -1103,12 +1076,10 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
   // Must be called in the first block to emit the Parameter ops.
   int AddArgumentNodes(base::Vector<OpIndex> args, int pos,
                        base::SmallVector<OpIndex, 16> wasm_params,
-                       const wasm::FunctionSig* sig, V<Context> context,
-                       int suspender_count) {
+                       const CanonicalSig* sig, V<Context> context) {
     // Convert wasm numbers to JS values.
     for (size_t i = 0; i < wasm_params.size(); ++i) {
-      args[pos++] =
-          ToJS(wasm_params[i], sig->GetParam(i + suspender_count), context);
+      args[pos++] = ToJS(wasm_params[i], sig->GetParam(i), context);
     }
     return pos;
   }
@@ -1149,11 +1120,6 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
   }
 
   OpIndex BuildSwitchToTheCentralStack() {
-    V<WordPtr> stack_limit_slot = __ WordPtrAdd(
-        __ FramePointer(),
-        __ UintPtrConstant(
-            WasmImportWrapperFrameConstants::kSecondaryStackLimitOffset));
-
     MachineType reps[] = {MachineType::Pointer(), MachineType::Pointer(),
                           MachineType::Pointer()};
     MachineSignature sig(1, 2, reps);
@@ -1161,13 +1127,10 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
     OpIndex central_stack_sp = CallC(
         &sig, ExternalReference::wasm_switch_to_the_central_stack_for_js(),
         {__ ExternalConstant(ExternalReference::isolate_address()),
-         stack_limit_slot});
+         __ FramePointer()});
     OpIndex old_sp = __ LoadStackPointer();
     // Temporarily disallow sp-relative offsets.
     __ SetStackPointer(central_stack_sp);
-    __ Store(__ FramePointer(), central_stack_sp, StoreOp::Kind::RawAligned(),
-             MemoryRepresentation::UintPtr(), compiler::kNoWriteBarrier,
-             WasmImportWrapperFrameConstants::kCentralStackSPOffset);
     return old_sp;
   }
 
@@ -1190,43 +1153,31 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
   }
 
   void BuildSwitchBackFromCentralStack(OpIndex old_sp) {
-    OpIndex stack_limit =
-        __ Load(__ FramePointer(), LoadOp::Kind::RawAligned(),
-                MemoryRepresentation::UintPtr(),
-                WasmImportWrapperFrameConstants::kSecondaryStackLimitOffset);
-
     MachineType reps[] = {MachineType::Pointer(), MachineType::Pointer()};
-    MachineSignature sig(0, 2, reps);
-    CallC(&sig, ExternalReference::wasm_switch_from_the_central_stack_for_js(),
-          {__ ExternalConstant(ExternalReference::isolate_address()),
-           stack_limit});
-    __ Store(__ FramePointer(), __ IntPtrConstant(0),
-             StoreOp::Kind::RawAligned(), MemoryRepresentation::UintPtr(),
-             compiler::kNoWriteBarrier,
-             WasmImportWrapperFrameConstants::kCentralStackSPOffset);
-    __ SetStackPointer(old_sp);
+    MachineSignature sig(0, 1, reps);
+    IF_NOT (LIKELY(__ WordPtrEqual(old_sp, __ IntPtrConstant(0)))) {
+      CallC(&sig,
+            ExternalReference::wasm_switch_from_the_central_stack_for_js(),
+            {__ ExternalConstant(ExternalReference::isolate_address())});
+      __ SetStackPointer(old_sp);
+    }
   }
 
-  OpIndex BuildSuspend(OpIndex value, V<Object> suspender,
-                       V<Object> api_function_ref, OpIndex* old_sp) {
-    V<Context> native_context =
-        __ Load(api_function_ref, LoadOp::Kind::TaggedBase(),
-                MemoryRepresentation::TaggedPointer(),
-                WasmApiFunctionRef::kNativeContextOffset);
-    OpIndex active_suspender = LOAD_ROOT(ActiveSuspender);
-
+  OpIndex BuildSuspend(OpIndex value, V<Object> import_data, OpIndex* old_sp) {
     // If value is a promise, suspend to the js-to-wasm prompt, and resume later
     // with the promise's resolved value.
     ScopedVar<Object> result(this, value);
-    ScopedVar<WordPtr> old_sp_var(this, __ IntPtrConstant(0));
+    ScopedVar<WordPtr> old_sp_var(this, *old_sp);
     IF_NOT (__ IsSmi(value)) {
       IF (__ HasInstanceType(value, JS_PROMISE_TYPE)) {
-        IF (__ TaggedEqual(active_suspender, LOAD_ROOT(UndefinedValue))) {
-          CallRuntime(__ phase_zone(), Runtime::kThrowBadSuspenderError, {},
-                      native_context);
-          __ Unreachable();
-        }
-        IF_NOT (__ TaggedEqual(suspender, active_suspender)) {
+        V<Context> native_context =
+            __ Load(import_data, LoadOp::Kind::TaggedBase(),
+                    MemoryRepresentation::TaggedPointer(),
+                    WasmImportData::kNativeContextOffset);
+        OpIndex suspender = LOAD_ROOT(ActiveSuspender);
+        // Trap if the suspender is undefined, which occurs when the export was
+        // not wrapped with WebAssembly.promising.
+        IF (__ TaggedEqual(suspender, LOAD_ROOT(UndefinedValue))) {
           CallRuntime(__ phase_zone(), Runtime::kThrowBadSuspenderError, {},
                       native_context);
           __ Unreachable();
@@ -1259,8 +1210,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
         OpIndex promise_then =
             GetBuiltinPointerTarget(Builtin::kPerformPromiseThen);
         auto* then_call_desc = GetBuiltinCallDescriptor(
-            Builtin::kPerformPromiseThen, __ graph_zone(),
-            StubCallMode::kCallBuiltinPointer);
+            Builtin::kPerformPromiseThen, __ graph_zone());
         base::SmallVector<OpIndex, 16> args{value, on_fulfilled, on_rejected,
                                             LOAD_ROOT(UndefinedValue),
                                             native_context};
@@ -1268,8 +1218,8 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
                 then_call_desc);
 
         OpIndex suspend = GetTargetForBuiltinCall(Builtin::kWasmSuspend);
-        auto* suspend_call_descriptor = GetBuiltinCallDescriptor(
-            Builtin::kWasmSuspend, __ graph_zone(), stub_mode_);
+        auto* suspend_call_descriptor =
+            GetBuiltinCallDescriptor(Builtin::kWasmSuspend, __ graph_zone());
         BuildSwitchBackFromCentralStack(*old_sp);
         OpIndex resolved =
             __ Call(suspend, {suspender}, suspend_call_descriptor);
@@ -1289,8 +1239,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
         iterable, length, context);
   }
 
-  void SafeStore(int offset, wasm::ValueType type, OpIndex base,
-                 OpIndex value) {
+  void SafeStore(int offset, ValueType type, OpIndex base, OpIndex value) {
     int alignment = offset % type.value_kind_size();
     auto rep = MemoryRepresentation::FromMachineRepresentation(
         type.machine_representation());
@@ -1319,7 +1268,7 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
                    WasmInternalFunction::kCallTargetOffset);
   }
 
-  const OpIndex SafeLoad(OpIndex base, int offset, wasm::ValueType type) {
+  const OpIndex SafeLoad(OpIndex base, int offset, ValueType type) {
     int alignment = offset % type.value_kind_size();
     auto rep = MemoryRepresentation::FromMachineRepresentation(
         type.machine_representation());
@@ -1337,29 +1286,26 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
   }
 
  private:
-  const WasmModule* module_;
-  const wasm::FunctionSig* const sig_;
-  StubCallMode stub_mode_;
+  const CanonicalSig* const sig_;
 };
 
 void BuildWasmWrapper(compiler::turboshaft::PipelineData* data,
                       AccountingAllocator* allocator,
                       compiler::turboshaft::Graph& graph,
-                      const wasm::FunctionSig* sig,
-                      WrapperCompilationInfo wrapper_info,
-                      const WasmModule* module) {
+                      const CanonicalSig* sig,
+                      WrapperCompilationInfo wrapper_info) {
   Zone zone(allocator, ZONE_NAME);
   WasmGraphBuilderBase::Assembler assembler(data, graph, graph, &zone);
-  WasmWrapperTSGraphBuilder builder(&zone, assembler, module, sig,
+  WasmWrapperTSGraphBuilder builder(&zone, assembler, sig,
                                     wrapper_info.stub_mode);
   if (wrapper_info.code_kind == CodeKind::JS_TO_WASM_FUNCTION) {
     builder.BuildJSToWasmWrapper();
   } else if (wrapper_info.code_kind == CodeKind::WASM_TO_JS_FUNCTION) {
     builder.BuildWasmToJSWrapper(wrapper_info.import_kind,
                                  wrapper_info.expected_arity,
-                                 wrapper_info.suspend, module);
+                                 wrapper_info.suspend);
   } else if (wrapper_info.code_kind == CodeKind::WASM_TO_CAPI_FUNCTION) {
-    builder.BuildCapiCallWrapper(module);
+    builder.BuildCapiCallWrapper();
   } else {
     // TODO(thibaudm): Port remaining wrappers.
     UNREACHABLE();

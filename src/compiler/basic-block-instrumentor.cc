@@ -8,12 +8,12 @@
 
 #include "src/codegen/optimized-compilation-info.h"
 #include "src/compiler/common-operator.h"
-#include "src/compiler/graph.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node.h"
 #include "src/compiler/operator-properties.h"
 #include "src/compiler/schedule.h"
+#include "src/compiler/turbofan-graph.h"
 #include "src/compiler/turboshaft/graph.h"
 #include "src/compiler/turboshaft/operation-matcher.h"
 #include "src/compiler/turboshaft/operations.h"
@@ -240,7 +240,7 @@ bool IsBuiltinCall(const turboshaft::Operation& op,
   Handle<HeapObject> heap_constant;
   if (!matcher.MatchHeapConstant(callee_index, &heap_constant)) return false;
   if (!IsCode(*heap_constant)) return false;
-  Handle<Code> code = Cast<Code>(heap_constant);
+  DirectHandle<Code> code = Cast<Code>(heap_constant);
   if (!code->is_builtin()) return false;
 
   *called_builtin = code->builtin_id();

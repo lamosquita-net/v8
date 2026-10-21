@@ -195,7 +195,7 @@ Handle<Dictionary> ShallowCopyDictionaryTemplate(
   for (InternalIndex i : dictionary->IterateEntries()) {
     Tagged<Object> value = dictionary->ValueAt(i);
     if (IsAccessorPair(value)) {
-      Handle<AccessorPair> pair(Cast<AccessorPair>(value), isolate);
+      DirectHandle<AccessorPair> pair(Cast<AccessorPair>(value), isolate);
       pair = AccessorPair::Copy(isolate, pair);
       dictionary->ValueAtPut(i, *pair);
     }
@@ -374,7 +374,7 @@ bool AddDescriptorsByTemplate(
   }
 
   // Atomically commit the changes.
-  receiver->set_map(*map, kReleaseStore);
+  receiver->set_map(isolate, *map, kReleaseStore);
   if (elements_dictionary->NumberOfElements() > 0) {
     receiver->set_elements(*elements_dictionary);
   }
@@ -463,7 +463,7 @@ bool AddDescriptorsByTemplate(
   }
 
   // Atomically commit the changes.
-  receiver->set_map(*map, kReleaseStore);
+  receiver->set_map(isolate, *map, kReleaseStore);
   receiver->set_raw_properties_or_hash(*properties_dictionary, kRelaxedStore);
   if (elements_dictionary->NumberOfElements() > 0) {
     receiver->set_elements(*elements_dictionary);

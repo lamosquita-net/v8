@@ -42,6 +42,7 @@
 #include <ostream>
 #include <type_traits>
 #include <unordered_map>
+#include <variant>
 
 #include "src/base/macros.h"
 #include "src/base/memory.h"
@@ -256,6 +257,14 @@ struct V8_EXPORT_PRIVATE AssemblerOptions {
   static AssemblerOptions Default(Isolate* isolate);
 };
 
+// Wrapper around an optional Zone*. If the zone isn't present, the
+// AccountingAllocator* may be used to create a fresh one.
+//
+// This is useful for assemblers that want to Zone-allocate temporay data,
+// without forcing all users to have to create a Zone before using the
+// assembler.
+using MaybeAssemblerZone = std::variant<Zone*, AccountingAllocator*>;
+
 class AssemblerBuffer {
  public:
   virtual ~AssemblerBuffer() = default;
@@ -308,7 +317,8 @@ class SlotDescriptor {
   }
 
  private:
-  SlotDescriptor(IndirectPointerTag tag) : indirect_pointer_tag_(tag) {}
+  explicit SlotDescriptor(IndirectPointerTag tag)
+      : indirect_pointer_tag_(tag) {}
 
   // If the tag is null, this object describes a direct pointer slot.
   IndirectPointerTag indirect_pointer_tag_;
@@ -526,13 +536,6 @@ class V8_EXPORT_PRIVATE AssemblerBase : public Malloced {
         !options().record_reloc_info_for_serialization &&
         !v8_flags.debug_code) {
       return false;
-    }
-    if (RelocInfo::IsOnlyForDisassembler(rmode)) {
-#ifdef ENABLE_DISASSEMBLER
-      return true;
-#else
-      return false;
-#endif  // ENABLE_DISASSEMBLER
     }
     return true;
   }

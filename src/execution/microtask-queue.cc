@@ -6,10 +6,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 
 #include "src/api/api-inl.h"
 #include "src/base/logging.h"
-#include "src/base/optional.h"
 #include "src/execution/isolate.h"
 #include "src/handles/handles-inl.h"
 #include "src/objects/microtask-inl.h"
@@ -115,7 +115,7 @@ void MicrotaskQueue::EnqueueMicrotask(Tagged<Microtask> microtask) {
 
 void MicrotaskQueue::PerformCheckpointInternal(v8::Isolate* v8_isolate) {
   DCHECK(ShouldPerfomCheckpoint());
-  base::Optional<MicrotasksScope> microtasks_scope;
+  std::optional<MicrotasksScope> microtasks_scope;
   if (microtasks_policy_ == v8::MicrotasksPolicy::kScoped) {
     // If we're using microtask scopes to schedule microtask execution, V8
     // API calls will check that there's always a microtask scope on the
@@ -246,11 +246,13 @@ void MicrotaskQueue::AddMicrotasksCompletedCallback(
   std::vector<CallbackWithData>* microtasks_completed_callbacks =
       &microtasks_completed_callbacks_;
   if (is_running_completed_callbacks_) {
-    // Use the COW vector if we are iterating the callbacks right now.
-    microtasks_completed_callbacks = &microtasks_completed_callbacks_cow_;
-    if (microtasks_completed_callbacks->empty()) {
-      *microtasks_completed_callbacks = microtasks_completed_callbacks_;
+    if (!microtasks_completed_callbacks_cow_.has_value()) {
+      microtasks_completed_callbacks_cow_.emplace(
+          microtasks_completed_callbacks_);
     }
+    // Use the COW vector if we are iterating the callbacks right now.
+    microtasks_completed_callbacks =
+        &microtasks_completed_callbacks_cow_.value();
   }
 
   CallbackWithData callback_with_data(callback, data);
@@ -268,11 +270,13 @@ void MicrotaskQueue::RemoveMicrotasksCompletedCallback(
   std::vector<CallbackWithData>* microtasks_completed_callbacks =
       &microtasks_completed_callbacks_;
   if (is_running_completed_callbacks_) {
-    // Use the COW vector if we are iterating the callbacks right now.
-    microtasks_completed_callbacks = &microtasks_completed_callbacks_cow_;
-    if (microtasks_completed_callbacks->empty()) {
-      *microtasks_completed_callbacks = microtasks_completed_callbacks_;
+    if (!microtasks_completed_callbacks_cow_.has_value()) {
+      microtasks_completed_callbacks_cow_.emplace(
+          microtasks_completed_callbacks_);
     }
+    // Use the COW vector if we are iterating the callbacks right now.
+    microtasks_completed_callbacks =
+        &microtasks_completed_callbacks_cow_.value();
   }
 
   CallbackWithData callback_with_data(callback, data);
@@ -291,10 +295,10 @@ void MicrotaskQueue::OnCompleted(Isolate* isolate) {
     callback.first(reinterpret_cast<v8::Isolate*>(isolate), callback.second);
   }
   is_running_completed_callbacks_ = false;
-  if (V8_UNLIKELY(!microtasks_completed_callbacks_cow_.empty())) {
+  if (V8_UNLIKELY(microtasks_completed_callbacks_cow_.has_value())) {
     microtasks_completed_callbacks_ =
-        std::move(microtasks_completed_callbacks_cow_);
-    microtasks_completed_callbacks_cow_.clear();
+        std::move(microtasks_completed_callbacks_cow_.value());
+    microtasks_completed_callbacks_cow_.reset();
   }
 }
 

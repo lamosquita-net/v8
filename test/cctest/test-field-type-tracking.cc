@@ -533,7 +533,7 @@ TEST(ReconfigureAccessorToNonExistingDataField) {
   CHECK_EQ(*new_map, *new_map2);
 
   DirectHandle<Object> value(Smi::zero(), isolate);
-  Handle<Map> prepared_map = Map::PrepareForDataProperty(
+  DirectHandle<Map> prepared_map = Map::PrepareForDataProperty(
       isolate, new_map, first, PropertyConstness::kConst, value);
   // None to Smi generalization is trivial, map does not change.
   CHECK_EQ(*new_map, *prepared_map);
@@ -1026,7 +1026,7 @@ TEST(GeneralizeFieldWithAccessorProperties) {
   CHECK(!active_map->is_deprecated());
 
   // Update all deprecated maps and check that they are now the same.
-  Handle<Map> updated_map = Map::Update(isolate, map);
+  DirectHandle<Map> updated_map = Map::Update(isolate, map);
   CHECK_EQ(*active_map, *updated_map);
   CheckMigrationTarget(isolate, *map, *updated_map);
   for (int i = 0; i < kPropCount; i++) {
@@ -1566,7 +1566,8 @@ TEST(ReconfigureDataFieldAttribute_DataConstantToDataFieldAfterTargetMap) {
       Handle<Map> sloppy_map =
           Map::CopyInitialMap(isolate, isolate->sloppy_function_map());
       Handle<SharedFunctionInfo> info =
-          factory->NewSharedFunctionInfoForBuiltin(name, Builtin::kIllegal);
+          factory->NewSharedFunctionInfoForBuiltin(name, Builtin::kIllegal, 0,
+                                                   kDontAdapt);
       function_type_ = FieldType::Class(sloppy_map, isolate);
       CHECK(sloppy_map->is_stable());
 
@@ -2061,7 +2062,7 @@ TEST(ReconfigurePropertySplitMapTransitionsOverflow) {
 
   // Generalize representation of property at index |kSplitProp|.
   const int kSplitProp = kPropCount / 2;
-  Handle<Map> split_map;
+  DirectHandle<Map> split_map;
   Handle<Map> map2 = initial_map;
   {
     for (int i = 0; i < kSplitProp + 1; i++) {
@@ -2282,7 +2283,7 @@ static void TestGeneralizeFieldWithSpecialTransition(
   Handle<Map> old_map = direction == UpdateDirectionCheck::kFwd ? map_a : map_b;
   CHECK(!active_map->is_deprecated());
   // Update all deprecated maps and check that they are now the same.
-  Handle<Map> updated_map = Map::Update(isolate, old_map);
+  DirectHandle<Map> updated_map = Map::Update(isolate, old_map);
   CHECK_EQ(*active_map, *updated_map);
   CheckMigrationTarget(isolate, *map_a, *updated_map);
   for (int i = 0; i < kPropCount; i++) {
@@ -2694,7 +2695,7 @@ static void TestGeneralizeFieldWithSpecialTransitionLegacy(
         CHECK(i == 0 || maps[i - 1]->is_deprecated());
         CHECK(expectations.Check(*new_map));
 
-        Handle<Map> new_map2 = Map::Update(isolate, map2);
+        DirectHandle<Map> new_map2 = Map::Update(isolate, map2);
         CHECK(!new_map2->is_deprecated());
         CHECK(!new_map2->is_dictionary_map());
 
@@ -2746,11 +2747,11 @@ static void TestGeneralizeFieldWithSpecialTransitionLegacy(
     }
   }
 
-  Handle<Map> active_map = maps[kPropCount - 1];
+  DirectHandle<Map> active_map = maps[kPropCount - 1];
   CHECK(!active_map->is_deprecated());
 
   // Update all deprecated maps and check that they are now the same.
-  Handle<Map> updated_map = Map::Update(isolate, map);
+  DirectHandle<Map> updated_map = Map::Update(isolate, map);
   CHECK_EQ(*active_map, *updated_map);
   CheckMigrationTarget(isolate, *map, *updated_map);
   for (int i = 0; i < kPropCount; i++) {
@@ -3235,8 +3236,8 @@ TEST(TransitionDataConstantToAnotherDataConstant) {
   Handle<String> name = factory->empty_string();
   Handle<Map> sloppy_map =
       Map::CopyInitialMap(isolate, isolate->sloppy_function_map());
-  Handle<SharedFunctionInfo> info =
-      factory->NewSharedFunctionInfoForBuiltin(name, Builtin::kIllegal);
+  Handle<SharedFunctionInfo> info = factory->NewSharedFunctionInfoForBuiltin(
+      name, Builtin::kIllegal, 0, kDontAdapt);
   CHECK(sloppy_map->is_stable());
 
   Handle<JSFunction> js_func1 =
@@ -3308,7 +3309,7 @@ TEST(HoleyHeapNumber) {
   // Ensure that new storage for uninitialized value or mutable heap number
   // with uninitialized sentinel (kHoleNanInt64) is a mutable heap number
   // with uninitialized sentinel.
-  Handle<Object> obj =
+  DirectHandle<Object> obj =
       Object::NewStorageFor(isolate, isolate->factory()->uninitialized_value(),
                             Representation::Double());
   CHECK(IsHeapNumber(*obj));

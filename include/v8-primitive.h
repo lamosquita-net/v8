@@ -240,6 +240,13 @@ class V8_EXPORT String : public Name {
      */
     virtual bool IsCacheable() const { return true; }
 
+    /**
+     * Internally V8 will call this Unaccount method when the external string
+     * resource should be unaccounted for. This method can be overridden in
+     * subclasses to control how allocated external bytes are accounted.
+     */
+    virtual void Unaccount(Isolate* isolate) {}
+
     // Disallow copying and assigning.
     ExternalStringResourceBase(const ExternalStringResourceBase&) = delete;
     void operator=(const ExternalStringResourceBase&) = delete;
@@ -389,6 +396,8 @@ class V8_EXPORT String : public Name {
    * string is returned in encoding_out.
    */
   V8_INLINE ExternalStringResourceBase* GetExternalStringResourceBase(
+      v8::Isolate* isolate, Encoding* encoding_out) const;
+  V8_INLINE ExternalStringResourceBase* GetExternalStringResourceBase(
       Encoding* encoding_out) const;
 
   /**
@@ -472,7 +481,19 @@ class V8_EXPORT String : public Name {
    * The string is not modified if the operation fails. See NewExternal for
    * information on the lifetime of the resource.
    */
+  V8_DEPRECATE_SOON("Use the version with the isolate argument instead.")
   bool MakeExternal(ExternalStringResource* resource);
+
+  /**
+   * Associate an external string resource with this string by transforming it
+   * in place so that existing references to this string in the JavaScript heap
+   * will use the external string resource. The external string resource's
+   * character contents need to be equivalent to this string.
+   * Returns true if the string has been changed to be an external string.
+   * The string is not modified if the operation fails. See NewExternal for
+   * information on the lifetime of the resource.
+   */
+  bool MakeExternal(Isolate* isolate, ExternalStringResource* resource);
 
   /**
    * Creates a new external string using the one-byte data defined in the given
@@ -494,7 +515,19 @@ class V8_EXPORT String : public Name {
    * The string is not modified if the operation fails. See NewExternal for
    * information on the lifetime of the resource.
    */
+  V8_DEPRECATE_SOON("Use the version with the isolate argument instead.")
   bool MakeExternal(ExternalOneByteStringResource* resource);
+
+  /**
+   * Associate an external string resource with this string by transforming it
+   * in place so that existing references to this string in the JavaScript heap
+   * will use the external string resource. The external string resource's
+   * character contents need to be equivalent to this string.
+   * Returns true if the string has been changed to be an external string.
+   * The string is not modified if the operation fails. See NewExternal for
+   * information on the lifetime of the resource.
+   */
+  bool MakeExternal(Isolate* isolate, ExternalOneByteStringResource* resource);
 
   /**
    * Returns true if this string can be made external, given the encoding for
@@ -876,6 +909,28 @@ String::ExternalStringResource* String::GetExternalStringResource() const {
   VerifyExternalStringResource(result);
 #endif
   return result;
+}
+
+String::ExternalStringResourceBase* String::GetExternalStringResourceBase(
+    v8::Isolate* isolate, String::Encoding* encoding_out) const {
+  using A = internal::Address;
+  using I = internal::Internals;
+  A obj = internal::ValueHelper::ValueAsAddress(this);
+  int type = I::GetInstanceType(obj) & I::kStringRepresentationAndEncodingMask;
+  *encoding_out = static_cast<Encoding>(type & I::kStringEncodingMask);
+  ExternalStringResourceBase* resource;
+  if (type == I::kExternalOneByteRepresentationTag ||
+      type == I::kExternalTwoByteRepresentationTag) {
+    A value = I::ReadExternalPointerField<internal::kExternalStringResourceTag>(
+        isolate, obj, I::kStringResourceOffset);
+    resource = reinterpret_cast<ExternalStringResourceBase*>(value);
+  } else {
+    resource = GetExternalStringResourceBaseSlow(encoding_out);
+  }
+#ifdef V8_ENABLE_CHECKS
+  VerifyExternalStringResourceBase(resource, *encoding_out);
+#endif
+  return resource;
 }
 
 String::ExternalStringResourceBase* String::GetExternalStringResourceBase(

@@ -501,6 +501,7 @@ class UnicodeWithGCTest : public TestWithHeapInternals {};
   TEST_F(UnicodeWithGCTest, GCInsideNewStringFromUtf8SubStringWith##NAME) {   \
     v8_flags.stress_concurrent_allocation =                                   \
         false; /* For SimulateFullSpace. */                                   \
+    ManualGCScope manual_gc_scope(isolate());                                 \
     v8::HandleScope scope(reinterpret_cast<v8::Isolate*>(isolate()));         \
     Factory* factory = isolate()->factory();                                  \
     /* Length must be bigger than the buffer size of the Utf8Decoder. */      \
@@ -512,10 +513,10 @@ class UnicodeWithGCTest : public TestWithHeapInternals {};
                 reinterpret_cast<const uint8_t*>(buf), len))                  \
             .ToHandleChecked();                                               \
     if (v8_flags.single_generation) {                                         \
-      CHECK(!Heap::InYoungGeneration(*main_string));                          \
+      CHECK(!HeapLayout::InYoungGeneration(*main_string));                    \
       SimulateFullSpace(heap()->old_space());                                 \
     } else {                                                                  \
-      CHECK(Heap::InYoungGeneration(*main_string));                           \
+      CHECK(HeapLayout::InYoungGeneration(*main_string));                     \
       SimulateFullSpace(heap()->new_space());                                 \
     }                                                                         \
     /* Offset by two to check substring-ing. */                               \

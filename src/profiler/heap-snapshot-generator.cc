@@ -4,10 +4,10 @@
 
 #include "src/profiler/heap-snapshot-generator.h"
 
+#include <optional>
 #include <utility>
 
 #include "src/api/api-inl.h"
-#include "src/base/optional.h"
 #include "src/base/vector.h"
 #include "src/codegen/assembler-inl.h"
 #include "src/common/assert-scope.h"
@@ -15,6 +15,7 @@
 #include "src/debug/debug.h"
 #include "src/handles/global-handles.h"
 #include "src/heap/combined-heap.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap.h"
 #include "src/heap/safepoint.h"
 #include "src/numbers/conversions.h"
@@ -49,8 +50,7 @@
 #include "src/wasm/wasm-objects.h"
 #endif  // V8_ENABLE_WEBASSEMBLY
 
-namespace v8 {
-namespace internal {
+namespace v8::internal {
 
 #ifdef V8_ENABLE_HEAP_SNAPSHOT_VERIFY
 class HeapEntryVerifier {
@@ -1085,8 +1085,10 @@ HeapEntry::Type V8HeapExplorer::GetSystemEntryType(Tagged<HeapObject> object) {
   if (InstanceTypeChecker::IsAllocationSite(type) ||
       InstanceTypeChecker::IsArrayBoilerplateDescription(type) ||
       InstanceTypeChecker::IsBytecodeArray(type) ||
+      InstanceTypeChecker::IsBytecodeWrapper(type) ||
       InstanceTypeChecker::IsClosureFeedbackCellArray(type) ||
       InstanceTypeChecker::IsCode(type) ||
+      InstanceTypeChecker::IsCodeWrapper(type) ||
       InstanceTypeChecker::IsFeedbackCell(type) ||
       InstanceTypeChecker::IsFeedbackMetadata(type) ||
       InstanceTypeChecker::IsFeedbackVector(type) ||
@@ -1241,6 +1243,24 @@ class IndexedReferencesExtractor : public ObjectVisitorWithCageBases {
     // remove the cage_base parameter.
     const PtrComprCageBase unused_cage_base(kNullAddress);
     VisitSlotImpl(unused_cage_base, slot);
+  }
+
+  void VisitJSDispatchTableEntry(Tagged<HeapObject> host,
+                                 JSDispatchHandle handle) override {
+#ifdef V8_ENABLE_LEAPTIERING
+    // TODO(saelo): implement proper support for these fields here, similar to
+    // how we handle indirect pointer or protected pointer fields.
+    // Currently we only expect to see FeedbackCells or JSFunctions here.
+    if (IsJSFunction(host)) {
+      int field_index = JSFunction::kDispatchHandleOffset / kTaggedSize;
+      CHECK(generator_->visited_fields_[field_index]);
+      generator_->visited_fields_[field_index] = false;
+    } else if (IsFeedbackCell(host)) {
+      // Nothing to do: the Code object is tracked as part of the JSFunction.
+    } else {
+      UNREACHABLE();
+    }
+#endif  // V8_ENABLE_LEAPTIERING
   }
 
  private:
@@ -1446,8 +1466,13 @@ void V8HeapExplorer::ExtractJSObjectReferences(HeapEntry* entry,
     TagObject(js_fun->context(), "(context)");
     SetInternalReference(entry, "context", js_fun->context(),
                          JSFunction::kContextOffset);
+#ifdef V8_ENABLE_LEAPTIERING
+    SetInternalReference(entry, "code", js_fun->code(isolate),
+                         JSFunction::kDispatchHandleOffset);
+#else
     SetInternalReference(entry, "code", js_fun->code(isolate),
                          JSFunction::kCodeOffset);
+#endif  // V8_ENABLE_LEAPTIERING
   } else if (IsJSGlobalObject(obj)) {
     Tagged<JSGlobalObject> global_obj = Cast<JSGlobalObject>(obj);
     SetInternalReference(entry, "global_proxy", global_obj->global_proxy(),
@@ -1690,9 +1715,12 @@ void V8HeapExplorer::ExtractSharedFunctionInfoReferences(
                        SharedFunctionInfo::kNameOrScopeInfoOffset);
   SetInternalReference(entry, "script", shared->script(kAcquireLoad),
                        SharedFunctionInfo::kScriptOffset);
-  SetInternalReference(entry, "function_data",
-                       shared->function_data(kAcquireLoad),
-                       SharedFunctionInfo::kFunctionDataOffset);
+  SetInternalReference(entry, "trusted_function_data",
+                       shared->GetTrustedData(isolate()),
+                       SharedFunctionInfo::kTrustedFunctionDataOffset);
+  SetInternalReference(entry, "untrusted_function_data",
+                       shared->GetUntrustedData(),
+                       SharedFunctionInfo::kUntrustedFunctionDataOffset);
   SetInternalReference(
       entry, "raw_outer_scope_info_or_feedback_metadata",
       shared->raw_outer_scope_info_or_feedback_metadata(),
@@ -1709,8 +1737,7 @@ void V8HeapExplorer::ExtractScriptReferences(HeapEntry* entry,
   TagObject(script->line_ends(), "(script line ends)", HeapEntry::kCode);
   SetInternalReference(entry, "line_ends", script->line_ends(),
                        Script::kLineEndsOffset);
-  TagObject(script->shared_function_infos(), "(shared function infos)",
-            HeapEntry::kCode);
+  TagObject(script->infos(), "(infos)", HeapEntry::kCode);
   TagObject(script->host_defined_options(), "(host-defined options)",
             HeapEntry::kCode);
 #if V8_ENABLE_WEBASSEMBLY
@@ -1724,7 +1751,7 @@ void V8HeapExplorer::ExtractScriptReferences(HeapEntry* entry,
                          Script::kEvalFromPositionOffset);
     SetInternalReference(entry, "wasm_weak_instance_list",
                          script->wasm_weak_instance_list(),
-                         Script::kSharedFunctionInfosOffset);
+                         Script::kInfosOffset);
   }
 #endif
 }
@@ -1871,7 +1898,7 @@ void V8HeapExplorer::ExtractArrayBoilerplateDescriptionReferences(
 
 void V8HeapExplorer::ExtractRegExpBoilerplateDescriptionReferences(
     HeapEntry* entry, Tagged<RegExpBoilerplateDescription> value) {
-  TagObject(value->data(), "(RegExp data)", HeapEntry::kCode);
+  TagObject(value->data(isolate()), "(RegExpData)", HeapEntry::kCode);
 }
 
 class JSArrayBufferDataEntryAllocator : public HeapEntriesAllocator {
@@ -1978,12 +2005,14 @@ void V8HeapExplorer::ExtractScopeInfoReferences(HeapEntry* entry,
 
 void V8HeapExplorer::ExtractFeedbackVectorReferences(
     HeapEntry* entry, Tagged<FeedbackVector> feedback_vector) {
+#ifndef V8_ENABLE_LEAPTIERING
   Tagged<MaybeObject> code = feedback_vector->maybe_optimized_code();
   Tagged<HeapObject> code_heap_object;
   if (code.GetHeapObjectIfWeak(&code_heap_object)) {
     SetWeakReference(entry, "optimized code", code_heap_object,
                      FeedbackVector::kMaybeOptimizedCodeOffset);
   }
+#endif  // !V8_ENABLE_LEAPTIERING
   for (int i = 0; i < feedback_vector->length(); ++i) {
     Tagged<MaybeObject> maybe_entry = *(feedback_vector->slots_start() + i);
     Tagged<HeapObject> entry;
@@ -2222,6 +2251,7 @@ void V8HeapExplorer::ExtractWasmStructReferences(Tagged<WasmStruct> obj,
       }
       case wasm::kRtt:
       case wasm::kVoid:
+      case wasm::kTop:
       case wasm::kBottom:
         UNREACHABLE();
     }
@@ -2351,7 +2381,7 @@ class RootsReferencesExtractor : public RootVisitor {
   void VisitRootPointer(Root root, const char* description,
                         FullObjectSlot p) override {
     Tagged<Object> object = *p;
-#ifdef V8_ENABLE_DIRECT_LOCAL
+#ifdef V8_ENABLE_DIRECT_HANDLE
     if (object.ptr() == kTaggedNullAddress) return;
 #endif
     if (root == Root::kBuiltins) {
@@ -2481,8 +2511,8 @@ bool V8HeapExplorer::IsEssentialObject(Tagged<Object> object) {
   if (!IsHeapObject(object)) return false;
   // Avoid comparing objects in other pointer compression cages to objects
   // inside the main cage as the comparison may only look at the lower 32 bits.
-  if (IsCodeSpaceObject(Cast<HeapObject>(object)) ||
-      IsTrustedSpaceObject(Cast<HeapObject>(object))) {
+  if (HeapLayout::InCodeSpace(Cast<HeapObject>(object)) ||
+      HeapLayout::InTrustedSpace(Cast<HeapObject>(object))) {
     return true;
   }
   Isolate* isolate = heap_->isolate();
@@ -2612,7 +2642,7 @@ void V8HeapExplorer::SetWeakReference(
 
 void V8HeapExplorer::SetWeakReference(HeapEntry* parent_entry, int index,
                                       Tagged<Object> child_obj,
-                                      base::Optional<int> field_offset) {
+                                      std::optional<int> field_offset) {
   if (!IsEssentialObject(child_obj)) {
     return;
   }
@@ -2739,7 +2769,7 @@ const char* V8HeapExplorer::GetStrongGcSubrootName(Tagged<HeapObject> object) {
 }
 
 void V8HeapExplorer::TagObject(Tagged<Object> obj, const char* tag,
-                               base::Optional<HeapEntry::Type> type,
+                               std::optional<HeapEntry::Type> type,
                                bool overwrite_existing_name) {
   if (IsEssentialObject(obj)) {
     HeapEntry* entry = GetEntry(obj);
@@ -3217,13 +3247,20 @@ bool HeapSnapshotGenerator::FillReferences() {
 }
 
 // type, name, id, self_size, edge_count, trace_node_id, detachedness.
-const int HeapSnapshotJSONSerializer::kNodeFieldsCount = 7;
+const int HeapSnapshotJSONSerializer::kNodeFieldsCountWithTraceNodeId = 7;
+const int HeapSnapshotJSONSerializer::kNodeFieldsCountWithoutTraceNodeId = 6;
 
 void HeapSnapshotJSONSerializer::Serialize(v8::OutputStream* stream) {
   v8::base::ElapsedTimer timer;
   timer.Start();
   DCHECK_NULL(writer_);
   writer_ = new OutputStreamWriter(stream);
+  trace_function_count_ = 0;
+  if (AllocationTracker* tracker =
+          snapshot_->profiler()->allocation_tracker()) {
+    trace_function_count_ =
+        static_cast<uint32_t>(tracker->function_info_list().size());
+  }
   SerializeImpl();
   delete writer_;
   writer_ = nullptr;
@@ -3391,8 +3428,12 @@ void HeapSnapshotJSONSerializer::SerializeNode(const HeapEntry* entry) {
   buffer[buffer_pos++] = ',';
   buffer_pos = utoa(entry->children_count(), buffer, buffer_pos);
   buffer[buffer_pos++] = ',';
-  buffer_pos = utoa(entry->trace_node_id(), buffer, buffer_pos);
-  buffer[buffer_pos++] = ',';
+  if (trace_function_count_) {
+    buffer_pos = utoa(entry->trace_node_id(), buffer, buffer_pos);
+    buffer[buffer_pos++] = ',';
+  } else {
+    CHECK_EQ(0, entry->trace_node_id());
+  }
   buffer_pos = utoa(entry->detachedness(), buffer, buffer_pos);
   buffer[buffer_pos++] = '\n';
   buffer[buffer_pos++] = '\0';
@@ -3414,17 +3455,18 @@ void HeapSnapshotJSONSerializer::SerializeSnapshot() {
 
   // clang-format off
 #define JSON_A(s) "[" s "]"
-#define JSON_O(s) "{" s "}"
 #define JSON_S(s) "\"" s "\""
-  writer_->AddString(JSON_O(
-    JSON_S("node_fields") ":" JSON_A(
+  writer_->AddString("{"
+    JSON_S("node_fields") ":["
         JSON_S("type") ","
         JSON_S("name") ","
         JSON_S("id") ","
         JSON_S("self_size") ","
-        JSON_S("edge_count") ","
-        JSON_S("trace_node_id") ","
-        JSON_S("detachedness")) ","
+        JSON_S("edge_count") ",");
+  if (trace_function_count_) writer_->AddString(JSON_S("trace_node_id") ",");
+  writer_->AddString(
+        JSON_S("detachedness")
+    "],"
     JSON_S("node_types") ":" JSON_A(
         JSON_A(
             JSON_S("hidden") ","
@@ -3483,22 +3525,17 @@ void HeapSnapshotJSONSerializer::SerializeSnapshot() {
         JSON_S("object_index") ","
         JSON_S("script_id") ","
         JSON_S("line") ","
-        JSON_S("column"))));
+        JSON_S("column"))
+  "}");
 // clang-format on
 #undef JSON_S
-#undef JSON_O
 #undef JSON_A
   writer_->AddString(",\"node_count\":");
   writer_->AddNumber(static_cast<unsigned>(snapshot_->entries().size()));
   writer_->AddString(",\"edge_count\":");
   writer_->AddNumber(static_cast<double>(snapshot_->edges().size()));
   writer_->AddString(",\"trace_function_count\":");
-  uint32_t count = 0;
-  AllocationTracker* tracker = snapshot_->profiler()->allocation_tracker();
-  if (tracker) {
-    count = static_cast<uint32_t>(tracker->function_info_list().size());
-  }
-  writer_->AddNumber(count);
+  writer_->AddNumber(trace_function_count_);
 }
 
 static void WriteUChar(OutputStreamWriter* w, unibrow::uchar u) {
@@ -3710,5 +3747,4 @@ void HeapSnapshotJSONSerializer::SerializeLocations() {
   }
 }
 
-}  // namespace internal
-}  // namespace v8
+}  // namespace v8::internal

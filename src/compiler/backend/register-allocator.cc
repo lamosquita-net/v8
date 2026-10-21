@@ -5,6 +5,7 @@
 #include "src/compiler/backend/register-allocator.h"
 
 #include <iomanip>
+#include <optional>
 
 #include "src/base/iterator.h"
 #include "src/base/small-vector.h"
@@ -1057,7 +1058,7 @@ SpillRange::SpillRange(TopLevelLiveRange* parent, Zone* zone)
 
 // Checks if the `UseInterval`s in `a` intersect with those in `b`.
 // Returns the two intervals that intersected, or `std::nullopt` if none did.
-static base::Optional<std::pair<UseInterval, UseInterval>>
+static std::optional<std::pair<UseInterval, UseInterval>>
 AreUseIntervalsIntersectingVector(base::Vector<const UseInterval> a,
                                   base::Vector<const UseInterval> b) {
   SLOW_DCHECK(std::is_sorted(a.begin(), a.end()) &&
@@ -1096,7 +1097,7 @@ AreUseIntervalsIntersectingVector(base::Vector<const UseInterval> a,
 // containers of `UseInterval`s, as long as they can be converted to a
 // `base::Vector` (which is essentially just a memory span).
 template <typename ContainerA, typename ContainerB>
-base::Optional<std::pair<UseInterval, UseInterval>> AreUseIntervalsIntersecting(
+std::optional<std::pair<UseInterval, UseInterval>> AreUseIntervalsIntersecting(
     const ContainerA& a, const ContainerB& b) {
   return AreUseIntervalsIntersectingVector(base::VectorOf(a),
                                            base::VectorOf(b));
@@ -3270,12 +3271,19 @@ void LinearScanAllocator::ComputeStateFromManyPredecessors(
       used_registers[reg] = 1;
     }
   };
+  struct TopLevelLiveRangeComparator {
+    bool operator()(const TopLevelLiveRange* lhs,
+                    const TopLevelLiveRange* rhs) const {
+      return lhs->vreg() < rhs->vreg();
+    }
+  };
   // Typically this map is very small, e.g., on JetStream2 it has at most 3
   // elements ~80% of the time and at most 8 elements ~94% of the time.
   // Thus use a `SmallZoneMap` to avoid allocations and because linear search
   // in an array is faster than map lookup for such small sizes.
   // We don't want too many inline elements though since `Vote` is pretty large.
-  using RangeVoteMap = SmallZoneMap<TopLevelLiveRange*, Vote, 16>;
+  using RangeVoteMap =
+      SmallZoneMap<TopLevelLiveRange*, Vote, 16, TopLevelLiveRangeComparator>;
   static_assert(sizeof(RangeVoteMap) < 4096, "too large stack allocation");
   RangeVoteMap counts(data()->allocation_zone());
 

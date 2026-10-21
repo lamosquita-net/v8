@@ -4,10 +4,11 @@
 
 #include "src/asmjs/asm-js.h"
 
+#include <optional>
+
 #include "src/asmjs/asm-names.h"
 #include "src/asmjs/asm-parser.h"
 #include "src/ast/ast.h"
-#include "src/base/optional.h"
 #include "src/base/platform/elapsed-timer.h"
 #include "src/base/vector.h"
 #include "src/codegen/compiler.h"
@@ -129,8 +130,7 @@ void Report(Handle<Script> script, int position, base::Vector<const char> text,
   DirectHandle<String> text_object =
       isolate->factory()->InternalizeUtf8String(text);
   DirectHandle<JSMessageObject> message = MessageHandler::MakeMessageObject(
-      isolate, message_template, &location, text_object,
-      Handle<FixedArray>::null());
+      isolate, message_template, &location, text_object);
   message->set_error_level(level);
   MessageHandler::ReportMessage(isolate, &location, message);
 }
@@ -235,7 +235,7 @@ UnoptimizedCompilationJob::Status AsmJsCompilationJob::ExecuteJobImpl() {
   Zone translate_zone(allocator_, ZONE_NAME);
 
   Utf16CharacterStream* stream = parse_info()->character_stream();
-  base::Optional<AllowHandleDereference> allow_deref;
+  std::optional<AllowHandleDereference> allow_deref;
   if (stream->can_access_heap()) {
     allow_deref.emplace();
   }

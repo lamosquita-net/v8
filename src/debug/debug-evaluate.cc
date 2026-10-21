@@ -89,6 +89,10 @@ MaybeHandle<Object> DebugEvaluate::Local(Isolate* isolate,
   DebuggableStackFrameIterator it(isolate, frame_id);
 #if V8_ENABLE_WEBASSEMBLY
   if (it.is_wasm()) {
+#if V8_ENABLE_DRUMBRAKE
+    // TODO(paolosev@microsoft.com) - Not supported by Wasm interpreter.
+    if (it.is_wasm_interpreter_entry()) return {};
+#endif  // V8_ENABLE_DRUMBRAKE
     WasmFrame* frame = WasmFrame::cast(it.frame());
     Handle<SharedFunctionInfo> outer_info(
         isolate->native_context()->empty_function()->shared(), isolate);
@@ -175,10 +179,10 @@ MaybeHandle<Object> DebugEvaluate::Evaluate(
   Handle<JSFunction> eval_fun;
   ASSIGN_RETURN_ON_EXCEPTION(
       isolate, eval_fun,
-      Compiler::GetFunctionFromEval(
-          source, outer_info, context, LanguageMode::kSloppy,
-          NO_PARSE_RESTRICTION, kNoSourcePosition, kNoSourcePosition,
-          kNoSourcePosition, ParsingWhileDebugging::kYes));
+      Compiler::GetFunctionFromEval(source, outer_info, context,
+                                    LanguageMode::kSloppy, NO_PARSE_RESTRICTION,
+                                    kNoSourcePosition, kNoSourcePosition,
+                                    ParsingWhileDebugging::kYes));
 
   Handle<Object> result;
   bool success = false;
@@ -691,6 +695,9 @@ DebugInfo::SideEffectState BuiltinGetSideEffectState(Builtin id) {
     // DisposableStack builtins.
     case Builtin::kDisposableStackConstructor:
     case Builtin::kDisposableStackPrototypeGetDisposed:
+    // AsyncDisposableStack builtins.
+    case Builtin::kAsyncDisposableStackConstructor:
+    case Builtin::kAsyncDisposableStackPrototypeGetDisposed:
     // Map builtins.
     case Builtin::kMapConstructor:
     case Builtin::kMapGroupBy:
@@ -794,7 +801,6 @@ DebugInfo::SideEffectState BuiltinGetSideEffectState(Builtin id) {
     case Builtin::kStringPrototypeIsWellFormed:
     case Builtin::kStringPrototypeItalics:
     case Builtin::kStringPrototypeLastIndexOf:
-    case Builtin::kStringPrototypeLocaleCompare:
     case Builtin::kStringPrototypeLink:
     case Builtin::kStringPrototypeMatch:
     case Builtin::kStringPrototypeMatchAll:
@@ -820,10 +826,12 @@ DebugInfo::SideEffectState BuiltinGetSideEffectState(Builtin id) {
     case Builtin::kStringPrototypeToLocaleUpperCase:
 #ifdef V8_INTL_SUPPORT
     case Builtin::kStringToLowerCaseIntl:
+    case Builtin::kStringPrototypeLocaleCompareIntl:
     case Builtin::kStringPrototypeToLowerCaseIntl:
     case Builtin::kStringPrototypeToUpperCaseIntl:
     case Builtin::kStringPrototypeNormalizeIntl:
 #else
+    case Builtin::kStringPrototypeLocaleCompare:
     case Builtin::kStringPrototypeToLowerCase:
     case Builtin::kStringPrototypeToUpperCase:
     case Builtin::kStringPrototypeNormalize:
@@ -1012,6 +1020,12 @@ DebugInfo::SideEffectState BuiltinGetSideEffectState(Builtin id) {
     case Builtin::kDisposableStackPrototypeAdopt:
     case Builtin::kDisposableStackPrototypeDefer:
     case Builtin::kDisposableStackPrototypeMove:
+    // AsyncDisposableStack builtins.
+    case Builtin::kAsyncDisposableStackPrototypeUse:
+    case Builtin::kAsyncDisposableStackPrototypeDisposeAsync:
+    case Builtin::kAsyncDisposableStackPrototypeAdopt:
+    case Builtin::kAsyncDisposableStackPrototypeDefer:
+    case Builtin::kAsyncDisposableStackPrototypeMove:
     // RegExp builtins.
     case Builtin::kRegExpPrototypeTest:
     case Builtin::kRegExpPrototypeExec:
@@ -1030,6 +1044,11 @@ DebugInfo::SideEffectState BuiltinGetSideEffectState(Builtin id) {
     case Builtin::kRegExpPrototypeReplace:
     case Builtin::kRegExpPrototypeSearch:
       return DebugInfo::kRequiresRuntimeChecks;
+
+    // Debugging builtins.
+    case Builtin::kDebugPrintFloat64:
+    case Builtin::kDebugPrintWordPtr:
+      return DebugInfo::kHasNoSideEffect;
 
     default:
       if (v8_flags.trace_side_effect_free_debug_evaluate) {
@@ -1120,7 +1139,12 @@ static bool TransitivelyCalledBuiltinHasNoSideEffect(Builtin caller,
       // Transitively called Builtins:
     case Builtin::kAbort:
     case Builtin::kAbortCSADcheck:
-    case Builtin::kAdaptorWithBuiltinExitFrame:
+    case Builtin::kAdaptorWithBuiltinExitFrame0:
+    case Builtin::kAdaptorWithBuiltinExitFrame1:
+    case Builtin::kAdaptorWithBuiltinExitFrame2:
+    case Builtin::kAdaptorWithBuiltinExitFrame3:
+    case Builtin::kAdaptorWithBuiltinExitFrame4:
+    case Builtin::kAdaptorWithBuiltinExitFrame5:
     case Builtin::kArrayConstructorImpl:
     case Builtin::kArrayEveryLoopContinuation:
     case Builtin::kArrayFilterLoopContinuation:
@@ -1312,9 +1336,8 @@ void DebugEvaluate::VerifyTransitiveBuiltins(Isolate* isolate) {
     }
   }
   CHECK(!failed);
-#if defined(V8_TARGET_ARCH_PPC) || defined(V8_TARGET_ARCH_PPC64) ||      \
-    defined(V8_TARGET_ARCH_MIPS64) || defined(V8_TARGET_ARCH_RISCV32) || \
-    defined(V8_TARGET_ARCH_RISCV64)
+#if defined(V8_TARGET_ARCH_PPC64) || defined(V8_TARGET_ARCH_MIPS64) || \
+    defined(V8_TARGET_ARCH_RISCV32) || defined(V8_TARGET_ARCH_RISCV64)
   // Isolate-independent builtin calls and jumps do not emit reloc infos
   // on PPC. We try to avoid using PC relative code due to performance
   // issue with especially older hardwares.

@@ -4,11 +4,13 @@
 
 #include "src/compiler/frame-states.h"
 
+#include <optional>
+
 #include "src/base/functional.h"
 #include "src/codegen/callable.h"
-#include "src/compiler/graph.h"
 #include "src/compiler/js-graph.h"
 #include "src/compiler/node.h"
+#include "src/compiler/turbofan-graph.h"
 #include "src/handles/handles-inl.h"
 #include "src/objects/objects-inl.h"
 
@@ -118,7 +120,7 @@ FrameState CreateBuiltinContinuationFrameStateCommon(
     Node* context, Node** parameters, int parameter_count,
     Node* outer_frame_state,
     Handle<SharedFunctionInfo> shared = Handle<SharedFunctionInfo>(),
-    const wasm::FunctionSig* signature = nullptr) {
+    const wasm::CanonicalSig* signature = nullptr) {
   Graph* const graph = jsgraph->graph();
   CommonOperatorBuilder* const common = jsgraph->common();
 
@@ -152,7 +154,7 @@ FrameState CreateBuiltinContinuationFrameStateCommon(
 FrameState CreateStubBuiltinContinuationFrameState(
     JSGraph* jsgraph, Builtin name, Node* context, Node* const* parameters,
     int parameter_count, Node* outer_frame_state,
-    ContinuationFrameStateMode mode, const wasm::FunctionSig* signature) {
+    ContinuationFrameStateMode mode, const wasm::CanonicalSig* signature) {
   Callable callable = Builtins::CallableFor(jsgraph->isolate(), name);
   CallInterfaceDescriptor descriptor = callable.descriptor();
 
@@ -197,8 +199,8 @@ FrameState CreateStubBuiltinContinuationFrameState(
 #if V8_ENABLE_WEBASSEMBLY
 FrameState CreateJSWasmCallBuiltinContinuationFrameState(
     JSGraph* jsgraph, Node* context, Node* outer_frame_state,
-    const wasm::FunctionSig* signature) {
-  base::Optional<wasm::ValueKind> wasm_return_kind =
+    const wasm::CanonicalSig* signature) {
+  std::optional<wasm::ValueKind> wasm_return_kind =
       wasm::WasmReturnTypeFromSignature(signature);
   Node* node_return_type =
       jsgraph->SmiConstant(wasm_return_kind ? wasm_return_kind.value() : -1);

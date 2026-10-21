@@ -4,6 +4,8 @@
 
 #include "src/compiler/js-typed-lowering.h"
 
+#include <optional>
+
 #include "src/ast/modules.h"
 #include "src/builtins/builtins-utils.h"
 #include "src/codegen/code-factory.h"
@@ -20,8 +22,8 @@
 #include "src/compiler/node.h"
 #include "src/compiler/operator-properties.h"
 #include "src/compiler/simplified-operator.h"
+#include "src/compiler/turbofan-types.h"
 #include "src/compiler/type-cache.h"
-#include "src/compiler/types.h"
 #include "src/execution/protectors.h"
 #include "src/objects/js-generator.h"
 #include "src/objects/module-inl.h"
@@ -1110,7 +1112,7 @@ Reduction JSTypedLowering::ReduceJSToNumberInput(Node* input) {
     HeapObjectMatcher m(input);
     if (m.HasResolvedValue() && m.Ref(broker()).IsString()) {
       StringRef input_value = m.Ref(broker()).AsString();
-      base::Optional<double> number = input_value.ToNumber(broker());
+      std::optional<double> number = input_value.ToNumber(broker());
       if (!number.has_value()) return NoChange();
       return Replace(jsgraph()->ConstantNoHole(number.value()));
     }
@@ -1724,12 +1726,16 @@ void ReduceBuiltin(JSGraph* jsgraph, Node* node, Builtin builtin, int arity,
   const int argc = arity + BuiltinArguments::kNumExtraArgsWithReceiver;
   Node* argc_node = jsgraph->ConstantNoHole(argc);
 
-  static const int kStubAndReceiver = 2;
+  static const int kStub = 1;
+  static_assert(BuiltinArguments::kNewTargetIndex == 0);
+  static_assert(BuiltinArguments::kTargetIndex == 1);
+  static_assert(BuiltinArguments::kArgcIndex == 2);
+  static_assert(BuiltinArguments::kPaddingIndex == 3);
   node->InsertInput(zone, 1, new_target);
   node->InsertInput(zone, 2, target);
   node->InsertInput(zone, 3, argc_node);
   node->InsertInput(zone, 4, jsgraph->PaddingConstant());
-  int cursor = arity + kStubAndReceiver + BuiltinArguments::kNumExtraArgs;
+  int cursor = arity + kStub + BuiltinArguments::kNumExtraArgsWithReceiver;
 
   Address entry = Builtins::CppEntryOf(builtin);
   ExternalReference entry_ref = ExternalReference::Create(entry);

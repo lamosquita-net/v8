@@ -5,6 +5,7 @@
 
 #include "src/compiler/access-info.h"
 
+#include <optional>
 #include <ostream>
 
 #include "src/builtins/accessors.h"
@@ -360,7 +361,7 @@ ConstFieldInfo PropertyAccessInfo::GetConstFieldInfo() const {
 AccessInfoFactory::AccessInfoFactory(JSHeapBroker* broker, Zone* zone)
     : broker_(broker), type_cache_(TypeCache::Get()), zone_(zone) {}
 
-base::Optional<ElementAccessInfo> AccessInfoFactory::ComputeElementAccessInfo(
+std::optional<ElementAccessInfo> AccessInfoFactory::ComputeElementAccessInfo(
     MapRef map, AccessMode access_mode) const {
   if (!map.CanInlineElementAccess()) return {};
   return ElementAccessInfo({{map}, zone()}, map.elements_kind(), zone());
@@ -375,7 +376,7 @@ bool AccessInfoFactory::ComputeElementAccessInfos(
     // double), always use the "worst case" code without a transition.  This is
     // much faster than transitioning the elements to the worst case, trading a
     // TransitionElementsKind for a CheckMaps, avoiding mutation of the array.
-    base::Optional<ElementAccessInfo> access_info =
+    std::optional<ElementAccessInfo> access_info =
         ConsolidateElementLoad(feedback);
     if (access_info.has_value()) {
       access_infos->push_back(*access_info);
@@ -386,7 +387,7 @@ bool AccessInfoFactory::ComputeElementAccessInfos(
   for (auto const& group : feedback.transition_groups()) {
     DCHECK(!group.empty());
     OptionalMapRef target = group.front();
-    base::Optional<ElementAccessInfo> access_info =
+    std::optional<ElementAccessInfo> access_info =
         ComputeElementAccessInfo(target.value(), access_mode);
     if (!access_info.has_value()) return false;
 
@@ -473,8 +474,9 @@ PropertyAccessInfo AccessInfoFactory::ComputeDataFieldAccessInfo(
       OptionalMapRef maybe_field_map =
           TryMakeRef(broker(), FieldType::AsClass(*descriptors_field_type));
       if (!maybe_field_map.has_value()) return Invalid();
-      field_type = Type::For(maybe_field_map.value(), broker());
       field_map = maybe_field_map;
+      // field_type can only be inferred from field_map if it is stable and we
+      // add a stability dependency. This happens on use in the access builder.
     }
   } else {
     CHECK(details_representation.IsTagged());
@@ -573,7 +575,7 @@ PropertyAccessInfo AccessorAccessInfoHelper(
       return PropertyAccessInfo::Invalid(zone);
     }
     if (DEBUG_BOOL && holder.has_value()) {
-      base::Optional<Tagged<NativeContext>> holder_creation_context =
+      std::optional<Tagged<NativeContext>> holder_creation_context =
           holder->object()->GetCreationContext();
       CHECK(holder_creation_context.has_value());
       CHECK_EQ(*broker->target_native_context().object(),
@@ -599,7 +601,7 @@ PropertyAccessInfo AccessorAccessInfoHelper(
     }
   }
   if (access_mode == AccessMode::kLoad) {
-    base::Optional<Tagged<Name>> cached_property_name =
+    std::optional<Tagged<Name>> cached_property_name =
         FunctionTemplateInfo::TryGetCachedPropertyName(isolate, *accessor);
     if (cached_property_name.has_value()) {
       OptionalNameRef cached_property_name_ref =
@@ -924,6 +926,7 @@ PropertyAccessInfo AccessInfoFactory::ComputePropertyAccessInfo(
       return PropertyAccessInfo::NotFound(zone(), receiver_map, holder);
     }
 
+    CHECK(prototype.IsJSObject());
     holder = prototype.AsJSObject();
     map = map_prototype_map;
 
@@ -1024,7 +1027,7 @@ Maybe<ElementsKind> GeneralizeElementsKind(ElementsKind this_kind,
 
 }  // namespace
 
-base::Optional<ElementAccessInfo> AccessInfoFactory::ConsolidateElementLoad(
+std::optional<ElementAccessInfo> AccessInfoFactory::ConsolidateElementLoad(
     ElementAccessFeedback const& feedback) const {
   if (feedback.transition_groups().empty()) return {};
 
@@ -1166,8 +1169,9 @@ PropertyAccessInfo AccessInfoFactory::LookupTransition(
       OptionalMapRef maybe_field_map =
           TryMakeRef(broker(), FieldType::AsClass(*descriptors_field_type));
       if (!maybe_field_map.has_value()) return Invalid();
-      field_type = Type::For(maybe_field_map.value(), broker());
       field_map = maybe_field_map;
+      // field_type can only be inferred from field_map if it is stable and we
+      // add a stability dependency. This happens on use in the access builder.
     }
   }
 

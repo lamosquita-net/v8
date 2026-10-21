@@ -592,6 +592,13 @@ class MemoryRepresentation {
   static constexpr MemoryRepresentation IndirectPointer() {
     return MemoryRepresentation(Enum::kIndirectPointer);
   }
+  static constexpr MemoryRepresentation WasmCodePointer() {
+    if constexpr (V8_ENABLE_WASM_CODE_POINTER_TABLE_BOOL) {
+      return Uint32();
+    } else {
+      return UintPtr();
+    }
+  }
   static constexpr MemoryRepresentation SandboxedPointer() {
     return MemoryRepresentation(Enum::kSandboxedPointer);
   }
@@ -754,6 +761,7 @@ class MemoryRepresentation {
       case Uint64():
         return MachineType::Uint64();
       case Float16():
+        return MachineType::Float16();
       case Float32():
         return MachineType::Float32();
       case Float64():

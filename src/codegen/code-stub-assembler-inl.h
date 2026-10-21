@@ -15,6 +15,8 @@
 namespace v8 {
 namespace internal {
 
+#include "src/codegen/define-code-stub-assembler-macros.inc"
+
 template <typename TCallable, class... TArgs>
 TNode<Object> CodeStubAssembler::Call(TNode<Context> context,
                                       TNode<TCallable> callable,
@@ -213,9 +215,8 @@ TNode<Object> CodeStubAssembler::FastCloneJSObject(
     Label if_no_write_barrier(this),
         if_needs_write_barrier(this, Label::kDeferred);
 
-    TNode<BoolT> needs_write_barrier = IsPageFlagReset(
-        BitcastTaggedToWord(target), MemoryChunk::kIsInYoungGenerationMask);
-    Branch(needs_write_barrier, &if_needs_write_barrier, &if_no_write_barrier);
+    TrySkipWriteBarrier(target, &if_needs_write_barrier);
+    Goto(&if_no_write_barrier);
 
     BIND(&if_needs_write_barrier);
     EmitCopyLoop(true);
@@ -241,6 +242,9 @@ TNode<Object> CodeStubAssembler::FastCloneJSObject(
   return target;
 }
 
+#include "src/codegen/undef-code-stub-assembler-macros.inc"
+
 }  // namespace internal
 }  // namespace v8
+
 #endif  // V8_CODEGEN_CODE_STUB_ASSEMBLER_INL_H_

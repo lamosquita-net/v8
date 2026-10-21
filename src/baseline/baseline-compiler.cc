@@ -5,6 +5,7 @@
 #include "src/baseline/baseline-compiler.h"
 
 #include <algorithm>
+#include <optional>
 #include <type_traits>
 
 #include "src/base/bits.h"
@@ -58,6 +59,14 @@
 namespace v8 {
 namespace internal {
 namespace baseline {
+
+#define __ basm_.
+
+#define RCS_BASELINE_SCOPE(rcs)                               \
+  RCS_SCOPE(stats_,                                           \
+            local_isolate_->is_main_thread()                  \
+                ? RuntimeCallCounterId::kCompileBaseline##rcs \
+                : RuntimeCallCounterId::kCompileBackgroundBaseline##rcs)
 
 template <typename IsolateT>
 Handle<TrustedByteArray> BytecodeOffsetTableBuilder::ToBytecodeOffsetTable(
@@ -276,15 +285,15 @@ BaselineCompiler::BaselineCompiler(
       stats_(local_isolate->runtime_call_stats()),
       shared_function_info_(shared_function_info),
       bytecode_(bytecode),
+      zone_(local_isolate->allocator(), ZONE_NAME),
       masm_(
-          local_isolate->GetMainThreadIsolateUnsafe(),
+          local_isolate->GetMainThreadIsolateUnsafe(), &zone_,
           BaselineAssemblerOptions(local_isolate->GetMainThreadIsolateUnsafe()),
           CodeObjectRequired::kNo, AllocateBuffer(bytecode)),
       basm_(&masm_),
       iterator_(bytecode_),
-      zone_(local_isolate->allocator(), ZONE_NAME),
       labels_(zone_.AllocateArray<Label>(bytecode_->length())),
-      label_tags_(2*bytecode_->length(), &zone_) {
+      label_tags_(2 * bytecode_->length(), &zone_) {
   // Empirically determined expected size of the offset table at the 95th %ile,
   // based on the size of the bytecode, to be:
   //
@@ -292,14 +301,6 @@ BaselineCompiler::BaselineCompiler(
   bytecode_offset_table_builder_.Reserve(
       base::bits::RoundUpToPowerOfTwo(16 + bytecode_->Size() / 4));
 }
-
-#define __ basm_.
-
-#define RCS_BASELINE_SCOPE(rcs)                               \
-  RCS_SCOPE(stats_,                                           \
-            local_isolate_->is_main_thread()                  \
-                ? RuntimeCallCounterId::kCompileBaseline##rcs \
-                : RuntimeCallCounterId::kCompileBackgroundBaseline##rcs)
 
 void BaselineCompiler::GenerateCode() {
   {
@@ -502,7 +503,7 @@ void BaselineCompiler::VisitSingleBytecode() {
     interpreter::Bytecode bytecode = iterator().current_bytecode();
 
 #ifdef DEBUG
-    base::Optional<EnsureAccumulatorPreservedScope> accumulator_preserved_scope;
+    std::optional<EnsureAccumulatorPreservedScope> accumulator_preserved_scope;
     // We should make sure to preserve the accumulator whenever the bytecode
     // isn't registered as writing to it. We can't do this for jumps or switches
     // though, since the control flow would not match the control flow of this
@@ -520,7 +521,7 @@ void BaselineCompiler::VisitSingleBytecode() {
   case interpreter::Bytecode::k##name: \
     Visit##name();                     \
     break;
-      BYTECODE_LIST(BYTECODE_CASE)
+      BYTECODE_LIST(BYTECODE_CASE, BYTECODE_CASE)
 #undef BYTECODE_CASE
     }
   }
@@ -569,7 +570,7 @@ void BaselineCompiler::TraceBytecode(Runtime::FunctionId function_id) {
 #endif
 
 #define DECLARE_VISITOR(name, ...) void Visit##name();
-BYTECODE_LIST(DECLARE_VISITOR)
+BYTECODE_LIST(DECLARE_VISITOR, DECLARE_VISITOR)
 #undef DECLARE_VISITOR
 
 #define DECLARE_VISITOR(name, ...) \
@@ -2411,6 +2412,9 @@ SaveAccumulatorScope::~SaveAccumulatorScope() {
   ASM_CODE_COMMENT(assembler_->masm());
   assembler_->Pop(kInterpreterAccumulatorRegister);
 }
+
+#undef RCS_BASELINE_SCOPE
+#undef __
 
 }  // namespace baseline
 }  // namespace internal

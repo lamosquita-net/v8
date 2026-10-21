@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include "src/builtins/accessors.h"
 #include "src/builtins/builtins.h"
 #include "src/codegen/compiler.h"
+#include "src/codegen/source-position-table.h"
 #include "src/common/globals.h"
 #include "src/common/message-template.h"
 #include "src/date/date.h"
@@ -69,51 +71,28 @@
 #include "src/objects/instance-type.h"
 #include "src/objects/js-array-buffer-inl.h"
 #include "src/objects/js-array-inl.h"
-#include "src/objects/js-disposable-stack-inl.h"
-#include "src/objects/keys.h"
-#include "src/objects/lookup-inl.h"
-#include "src/objects/map-updater.h"
-#include "src/objects/objects-body-descriptors-inl.h"
-#include "src/objects/objects-inl.h"
-#include "src/objects/promise.h"
-#include "src/objects/property-details.h"
-#include "src/roots/roots.h"
-#include "src/snapshot/deserializer.h"
-#include "src/utils/identity-map.h"
-#ifdef V8_INTL_SUPPORT
-#include "src/objects/js-break-iterator.h"
-#include "src/objects/js-collator.h"
-#endif  // V8_INTL_SUPPORT
 #include "src/objects/js-collection-inl.h"
-#ifdef V8_INTL_SUPPORT
-#include "src/objects/js-date-time-format.h"
-#endif  // V8_INTL_SUPPORT
+#include "src/objects/js-disposable-stack-inl.h"
 #include "src/objects/js-generator-inl.h"
-#ifdef V8_INTL_SUPPORT
-#include "src/objects/js-list-format.h"
-#include "src/objects/js-locale.h"
-#include "src/objects/js-number-format.h"
-#include "src/objects/js-plural-rules.h"
-#endif  // V8_INTL_SUPPORT
 #include "src/objects/js-regexp-inl.h"
 #include "src/objects/js-regexp-string-iterator.h"
-#ifdef V8_INTL_SUPPORT
-#include "src/objects/js-relative-time-format.h"
-#include "src/objects/js-segment-iterator.h"
-#include "src/objects/js-segmenter.h"
-#include "src/objects/js-segments.h"
-#endif  // V8_INTL_SUPPORT
-#include "src/codegen/source-position-table.h"
 #include "src/objects/js-weak-refs-inl.h"
+#include "src/objects/keys.h"
 #include "src/objects/literal-objects-inl.h"
+#include "src/objects/lookup-inl.h"
 #include "src/objects/map-inl.h"
+#include "src/objects/map-updater.h"
 #include "src/objects/map.h"
 #include "src/objects/megadom-handler-inl.h"
 #include "src/objects/microtask-inl.h"
 #include "src/objects/module-inl.h"
+#include "src/objects/objects-body-descriptors-inl.h"
+#include "src/objects/objects-inl.h"
 #include "src/objects/promise-inl.h"
+#include "src/objects/promise.h"
 #include "src/objects/property-descriptor-object-inl.h"
 #include "src/objects/property-descriptor.h"
+#include "src/objects/property-details.h"
 #include "src/objects/prototype.h"
 #include "src/objects/slots-atomic-inl.h"
 #include "src/objects/string-comparator.h"
@@ -123,12 +102,15 @@
 #include "src/objects/transitions-inl.h"
 #include "src/parsing/preparse-data.h"
 #include "src/regexp/regexp.h"
+#include "src/roots/roots.h"
+#include "src/snapshot/deserializer.h"
 #include "src/strings/string-builder-inl.h"
 #include "src/strings/string-search.h"
 #include "src/strings/string-stream.h"
 #include "src/strings/unicode-decoder.h"
 #include "src/strings/unicode-inl.h"
 #include "src/utils/hex-format.h"
+#include "src/utils/identity-map.h"
 #include "src/utils/ostreams.h"
 #include "src/utils/sha-256.h"
 #include "src/utils/utils-inl.h"
@@ -138,8 +120,21 @@
 #include "src/wasm/wasm-objects.h"
 #endif  // V8_ENABLE_WEBASSEMBLY
 
-namespace v8 {
-namespace internal {
+#ifdef V8_INTL_SUPPORT
+#include "src/objects/js-break-iterator.h"
+#include "src/objects/js-collator.h"
+#include "src/objects/js-date-time-format.h"
+#include "src/objects/js-list-format.h"
+#include "src/objects/js-locale.h"
+#include "src/objects/js-number-format.h"
+#include "src/objects/js-plural-rules.h"
+#include "src/objects/js-relative-time-format.h"
+#include "src/objects/js-segment-iterator.h"
+#include "src/objects/js-segmenter.h"
+#include "src/objects/js-segments.h"
+#endif  // V8_INTL_SUPPORT
+
+namespace v8::internal {
 
 ShouldThrow GetShouldThrow(Isolate* isolate, Maybe<ShouldThrow> should_throw) {
   if (should_throw.IsJust()) return should_throw.FromJust();
@@ -147,7 +142,9 @@ ShouldThrow GetShouldThrow(Isolate* isolate, Maybe<ShouldThrow> should_throw) {
   LanguageMode mode = isolate->context()->scope_info()->language_mode();
   if (mode == LanguageMode::kStrict) return kThrowOnError;
 
-  for (StackFrameIterator it(isolate); !it.done(); it.Advance()) {
+  for (StackFrameIterator it(isolate, isolate->thread_local_top(),
+                             StackFrameIterator::NoHandles{});
+       !it.done(); it.Advance()) {
     if (!it.frame()->is_java_script()) continue;
 
     // Get the language mode from closure.
@@ -745,7 +742,7 @@ bool StrictNumberEquals(const Tagged<Number> x, const Tagged<Number> y) {
   return StrictNumberEquals(Object::NumberValue(x), Object::NumberValue(y));
 }
 
-bool StrictNumberEquals(Handle<Number> x, Handle<Number> y) {
+bool StrictNumberEquals(DirectHandle<Number> x, DirectHandle<Number> y) {
   return StrictNumberEquals(*x, *y);
 }
 
@@ -1900,10 +1897,6 @@ int HeapObject::SizeFromMap(Tagged<Map> map) const {
     return BytecodeArray::SizeFor(
         UncheckedCast<BytecodeArray>(*this)->length(kAcquireLoad));
   }
-  if (instance_type == EXTERNAL_POINTER_ARRAY_TYPE) {
-    return ExternalPointerArray::SizeFor(
-        UncheckedCast<ExternalPointerArray>(*this)->length(kAcquireLoad));
-  }
   if (instance_type == FREE_SPACE_TYPE) {
     return UncheckedCast<FreeSpace>(*this)->size(kRelaxedLoad);
   }
@@ -1931,8 +1924,7 @@ int HeapObject::SizeFromMap(Tagged<Map> map) const {
     return UncheckedCast<TrustedByteArray>(*this)->AllocatedSize();
   }
   if (instance_type == FEEDBACK_METADATA_TYPE) {
-    return FeedbackMetadata::SizeFor(
-        UncheckedCast<FeedbackMetadata>(*this)->slot_count(kAcquireLoad));
+    return UncheckedCast<FeedbackMetadata>(*this)->AllocatedSize();
   }
   if (base::IsInRange(instance_type, FIRST_DESCRIPTOR_ARRAY_TYPE,
                       LAST_DESCRIPTOR_ARRAY_TYPE)) {
@@ -2022,7 +2014,7 @@ bool HeapObject::NeedsRehashing(PtrComprCageBase cage_base) const {
 
 bool HeapObject::NeedsRehashing(InstanceType instance_type) const {
   if (V8_EXTERNAL_CODE_SPACE_BOOL) {
-    // Use map() only when it's guaranteed that it's not a InstructionStream
+    // Use map() only when it's guaranteed that it's not an InstructionStream
     // object.
     DCHECK_IMPLIES(instance_type != INSTRUCTION_STREAM_TYPE,
                    instance_type == map()->instance_type());
@@ -2034,7 +2026,7 @@ bool HeapObject::NeedsRehashing(InstanceType instance_type) const {
     case STRONG_DESCRIPTOR_ARRAY_TYPE:
       return Cast<DescriptorArray>(*this)->number_of_descriptors() > 1;
     case TRANSITION_ARRAY_TYPE:
-      return Cast<TransitionArray>(*this)->number_of_entries() > 1;
+      return Cast<TransitionArray>(*this)->number_of_transitions() > 1;
     case ORDERED_HASH_MAP_TYPE:
     case ORDERED_HASH_SET_TYPE:
       return false;  // We'll rehash from the JSMap or JSSet referencing them.
@@ -2293,26 +2285,38 @@ Maybe<bool> Object::SetPropertyInternal(LookupIterator* it,
         // perform the possibly effectful ToNumber (or ToBigInt) operation
         // anyways.
         DirectHandle<JSTypedArray> holder = it->GetHolder<JSTypedArray>();
-        Handle<Object> throwaway_value;
+        Handle<Object> converted_value;
         if (holder->type() == kExternalBigInt64Array ||
             holder->type() == kExternalBigUint64Array) {
           ASSIGN_RETURN_ON_EXCEPTION_VALUE(
-              it->isolate(), throwaway_value,
+              it->isolate(), converted_value,
               BigInt::FromObject(it->isolate(), value), Nothing<bool>());
         } else {
           ASSIGN_RETURN_ON_EXCEPTION_VALUE(
-              it->isolate(), throwaway_value,
+              it->isolate(), converted_value,
               Object::ToNumber(it->isolate(), value), Nothing<bool>());
         }
 
-        // FIXME: Throw a TypeError if the holder is detached here
-        // (IntegerIndexedElementSpec step 5).
+        // For RAB/GSABs, the above conversion might grow the buffer so that the
+        // index is no longer out of bounds. Redo the bounds check and try
+        // again.
+        it->RecheckTypedArrayBounds();
+        if (it->state() != LookupIterator::DATA) {
+          // Still out of bounds.
+          DCHECK_EQ(it->state(), LookupIterator::TYPED_ARRAY_INDEX_NOT_FOUND);
 
-        // TODO(verwaest): Per spec, we should return false here (steps 6-9
-        // in IntegerIndexedElementSpec), resulting in an exception being thrown
-        // on OOB accesses in strict code. Historically, v8 has not done made
-        // this change due to uncertainty about web compat. (v8:4901)
-        return Just(true);
+          // FIXME: Throw a TypeError if the holder is detached here
+          // (IntegerIndexedElementSet step 5).
+
+          // TODO(verwaest): Per spec, we should return false here (steps 6-9
+          // in IntegerIndexedElementSet), resulting in an exception being
+          // thrown on OOB accesses in strict code. Historically, v8 has not
+          // done made this change due to uncertainty about web compat.
+          // (v8:4901)
+          return Just(true);
+        }
+        value = converted_value;
+        [[fallthrough]];
       }
 
       case LookupIterator::DATA:
@@ -2578,7 +2582,8 @@ Maybe<bool> Object::SetDataProperty(LookupIterator* it, Handle<Object> value) {
   return Just(true);
 }
 
-Maybe<bool> Object::AddDataProperty(LookupIterator* it, Handle<Object> value,
+Maybe<bool> Object::AddDataProperty(LookupIterator* it,
+                                    DirectHandle<Object> value,
                                     PropertyAttributes attributes,
                                     Maybe<ShouldThrow> should_throw,
                                     StoreOrigin store_origin,
@@ -2648,8 +2653,9 @@ Maybe<bool> Object::AddDataProperty(LookupIterator* it, Handle<Object> value,
 
 // static
 Maybe<bool> Object::TransitionAndWriteDataProperty(
-    LookupIterator* it, Handle<Object> value, PropertyAttributes attributes,
-    Maybe<ShouldThrow> should_throw, StoreOrigin store_origin) {
+    LookupIterator* it, DirectHandle<Object> value,
+    PropertyAttributes attributes, Maybe<ShouldThrow> should_throw,
+    StoreOrigin store_origin) {
   Handle<JSReceiver> receiver = it->GetStoreTarget<JSReceiver>();
   it->UpdateProtector();
   // Migrate to the most up-to-date map that will be able to store |value|
@@ -2929,7 +2935,8 @@ Maybe<bool> JSProxy::DeletePropertyOrElement(DirectHandle<JSProxy> proxy,
       isolate, trap, Object::GetMethod(isolate, handler, trap_name),
       Nothing<bool>());
   if (IsUndefined(*trap, isolate)) {
-    return JSReceiver::DeletePropertyOrElement(target, name, language_mode);
+    return JSReceiver::DeletePropertyOrElement(isolate, target, name,
+                                               language_mode);
   }
 
   Handle<Object> trap_result;
@@ -4521,7 +4528,7 @@ bool Script::GetLineColumnWithLineEnds(
   return true;
 }
 
-int Script::GetColumnNumber(Handle<Script> script, int code_pos) {
+int Script::GetColumnNumber(DirectHandle<Script> script, int code_pos) {
   PositionInfo info;
   GetPositionInfo(script, code_pos, &info);
   return info.column;
@@ -4533,7 +4540,7 @@ int Script::GetColumnNumber(int code_pos) const {
   return info.column;
 }
 
-int Script::GetLineNumber(Handle<Script> script, int code_pos) {
+int Script::GetLineNumber(DirectHandle<Script> script, int code_pos) {
   PositionInfo info;
   GetPositionInfo(script, code_pos, &info);
   return info.line;
@@ -4570,14 +4577,14 @@ Handle<String> Script::GetScriptHash(Isolate* isolate,
     }
   }
 
-  Handle<String> src_text;
+  DirectHandle<String> src_text;
   {
     Tagged<Object> maybe_script_source = script->source(cage_base);
 
     if (!IsString(maybe_script_source, cage_base)) {
       return isolate->factory()->empty_string();
     }
-    src_text = handle(Cast<String>(maybe_script_source), isolate);
+    src_text = direct_handle(Cast<String>(maybe_script_source), isolate);
   }
 
   char formatted_hash[kSizeOfFormattedSha256Digest];
@@ -4602,14 +4609,13 @@ MaybeHandle<SharedFunctionInfo> Script::FindSharedFunctionInfo(
     FunctionLiteral* function_literal) {
   DCHECK(function_literal->shared_function_info().is_null());
   int function_literal_id = function_literal->function_literal_id();
-  CHECK_NE(function_literal_id, kFunctionLiteralIdInvalid);
+  CHECK_NE(function_literal_id, kInvalidInfoId);
   // If this check fails, the problem is most probably the function id
   // renumbering done by AstFunctionLiteralIdReindexer; in particular, that
   // AstTraversalVisitor doesn't recurse properly in the construct which
   // triggers the mismatch.
-  CHECK_LT(function_literal_id, script->shared_function_info_count());
-  Tagged<MaybeObject> shared =
-      script->shared_function_infos()->get(function_literal_id);
+  CHECK_LT(function_literal_id, script->infos()->length());
+  Tagged<MaybeObject> shared = script->infos()->get(function_literal_id);
   Tagged<HeapObject> heap_object;
   if (!shared.GetHeapObject(&heap_object) ||
       IsUndefined(heap_object, isolate)) {
@@ -4848,14 +4854,6 @@ const char* JSPromise::Status(v8::Promise::PromiseState status) {
   UNREACHABLE();
 }
 
-int JSPromise::async_task_id() const {
-  return AsyncTaskIdBits::decode(flags());
-}
-
-void JSPromise::set_async_task_id(int id) {
-  set_flags(AsyncTaskIdBits::update(flags(), id));
-}
-
 // static
 Handle<Object> JSPromise::Fulfill(DirectHandle<JSPromise> promise,
                                   DirectHandle<Object> value) {
@@ -4873,7 +4871,7 @@ Handle<Object> JSPromise::Fulfill(DirectHandle<JSPromise> promise,
   CHECK_EQ(Promise::kPending, promise->status());
 
   // 2. Let reactions be promise.[[PromiseFulfillReactions]].
-  Handle<Object> reactions(promise->reactions(), isolate);
+  DirectHandle<Object> reactions(promise->reactions(), isolate);
 
   // 3. Set promise.[[PromiseResult]] to value.
   // 4. Set promise.[[PromiseFulfillReactions]] to undefined.
@@ -4922,7 +4920,7 @@ Handle<Object> JSPromise::Reject(Handle<JSPromise> promise,
   CHECK_EQ(Promise::kPending, promise->status());
 
   // 2. Let reactions be promise.[[PromiseRejectReactions]].
-  Handle<Object> reactions(promise->reactions(), isolate);
+  DirectHandle<Object> reactions(promise->reactions(), isolate);
 
   // 3. Set promise.[[PromiseResult]] to reason.
   // 4. Set promise.[[PromiseFulfillReactions]] to undefined.
@@ -5103,6 +5101,7 @@ Handle<Object> JSPromise::TriggerPromiseReactions(
             PromiseReactionJobTask::kSizeOfAllPromiseReactionJobTasks));
     if (type == PromiseReaction::kFulfill) {
       task->set_map(
+          isolate,
           ReadOnlyRoots(isolate).promise_fulfill_reaction_job_task_map(),
           kReleaseStore);
       Cast<PromiseFulfillReactionJobTask>(task)->set_argument(*argument);
@@ -5124,6 +5123,7 @@ Handle<Object> JSPromise::TriggerPromiseReactions(
     } else {
       DisallowGarbageCollection no_gc;
       task->set_map(
+          isolate,
           ReadOnlyRoots(isolate).promise_reject_reaction_job_task_map(),
           kReleaseStore);
       Cast<PromiseRejectReactionJobTask>(task)->set_argument(*argument);
@@ -5326,7 +5326,7 @@ Handle<Derived> HashTable<Derived, Shape>::EnsureCapacity(
 
   bool should_pretenure = allocation == AllocationType::kOld ||
                           ((capacity > kMinCapacityForPretenure) &&
-                           !Heap::InYoungGeneration(*table));
+                           !HeapLayout::InYoungGeneration(*table));
   Handle<Derived> new_table = HashTable::New(
       isolate, new_nof,
       should_pretenure ? AllocationType::kOld : AllocationType::kYoung);
@@ -5386,7 +5386,7 @@ Handle<Derived> HashTable<Derived, Shape>::Shrink(Isolate* isolate,
   DCHECK_GE(new_capacity, Derived::kMinShrinkCapacity);
 
   bool pretenure = (new_capacity > kMinCapacityForPretenure) &&
-                   !Heap::InYoungGeneration(*table);
+                   !HeapLayout::InYoungGeneration(*table);
   Handle<Derived> new_table =
       HashTable::New(isolate, new_capacity,
                      pretenure ? AllocationType::kOld : AllocationType::kYoung,
@@ -5408,7 +5408,7 @@ InternalIndex HashTable<Derived, Shape>::FindInsertionEntry(
   }
 }
 
-base::Optional<Tagged<PropertyCell>>
+std::optional<Tagged<PropertyCell>>
 GlobalDictionary::TryFindPropertyCellForConcurrentLookupIterator(
     Isolate* isolate, DirectHandle<Name> name, RelaxedLoadTag tag) {
   // This reimplements HashTable::FindEntry for use in a concurrent setting.
@@ -6188,8 +6188,11 @@ void JSDisposableStackBase::InitializeJSDisposableStackBase(
     Isolate* isolate, DirectHandle<JSDisposableStackBase> disposable_stack) {
   DirectHandle<FixedArray> array = isolate->factory()->NewFixedArray(0);
   disposable_stack->set_stack(*array);
+  disposable_stack->set_needsAwait(false);
+  disposable_stack->set_hasAwaited(false);
   disposable_stack->set_length(0);
   disposable_stack->set_state(DisposableStackState::kPending);
+  disposable_stack->set_error(*(isolate->factory()->uninitialized_value()));
 }
 
 void PropertyCell::ClearAndInvalidate(ReadOnlyRoots roots) {
@@ -6656,5 +6659,4 @@ EXTERN_DEFINE_BASE_NAME_DICTIONARY(GlobalDictionary, GlobalDictionaryShape)
 #undef EXTERN_DEFINE_DICTIONARY
 #undef EXTERN_DEFINE_BASE_NAME_DICTIONARY
 
-}  // namespace internal
-}  // namespace v8
+}  // namespace v8::internal

@@ -254,6 +254,10 @@ void CallPrinter::VisitInitializeClassStaticElementsStatement(
   }
 }
 
+void CallPrinter::VisitAutoAccessorGetterBody(AutoAccessorGetterBody* node) {}
+
+void CallPrinter::VisitAutoAccessorSetterBody(AutoAccessorSetterBody* node) {}
+
 void CallPrinter::VisitNativeFunctionLiteral(NativeFunctionLiteral* node) {}
 
 void CallPrinter::VisitConditionalChain(ConditionalChain* node) {
@@ -691,6 +695,9 @@ void AstPrinter::PrintLiteral(Literal* literal, bool quote) {
   switch (literal->type()) {
     case Literal::kString:
       PrintLiteral(literal->AsRawString(), quote);
+      break;
+    case Literal::kConsString:
+      PrintLiteral(literal->AsConsString(), quote);
       break;
     case Literal::kSmi:
       Print("%d", Smi::ToInt(literal->AsSmiLiteral()));
@@ -1136,6 +1143,16 @@ void AstPrinter::VisitInitializeClassStaticElementsStatement(
   PrintClassStaticElements(node->elements());
 }
 
+void AstPrinter::VisitAutoAccessorGetterBody(AutoAccessorGetterBody* node) {
+  IndentedScope indent(this, "AUTO ACCESSOR GETTER BODY", node->position());
+  PrintIndentedVisit("AUTO ACCESSOR STORAGE PRIVATE NAME", node->name_proxy());
+}
+
+void AstPrinter::VisitAutoAccessorSetterBody(AutoAccessorSetterBody* node) {
+  IndentedScope indent(this, "AUTO ACCESSOR SETTER BODY", node->position());
+  PrintIndentedVisit("AUTO ACCESSOR STORAGE PRIVATE NAME", node->name_proxy());
+}
+
 void AstPrinter::PrintClassProperty(ClassLiteral::Property* property) {
   const char* prop_kind = nullptr;
   switch (property->kind()) {
@@ -1150,6 +1167,9 @@ void AstPrinter::PrintClassProperty(ClassLiteral::Property* property) {
       break;
     case ClassLiteral::Property::FIELD:
       prop_kind = "FIELD";
+      break;
+    case ClassLiteral::Property::AUTO_ACCESSOR:
+      prop_kind = "AUTO ACCESSOR";
       break;
   }
   base::EmbeddedVector<char, 128> buf;

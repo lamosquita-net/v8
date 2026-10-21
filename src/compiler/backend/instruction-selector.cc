@@ -5,6 +5,7 @@
 #include "src/compiler/backend/instruction-selector.h"
 
 #include <limits>
+#include <optional>
 
 #include "include/v8-internal.h"
 #include "src/base/iterator.h"
@@ -16,11 +17,11 @@
 #include "src/compiler/common-operator.h"
 #include "src/compiler/compiler-source-position-table.h"
 #include "src/compiler/globals.h"
-#include "src/compiler/graph.h"
 #include "src/compiler/js-heap-broker.h"
 #include "src/compiler/node-properties.h"
 #include "src/compiler/schedule.h"
 #include "src/compiler/state-values-utils.h"
+#include "src/compiler/turbofan-graph.h"
 #include "src/compiler/turboshaft/operations.h"
 #include "src/compiler/turboshaft/opmasks.h"
 #include "src/compiler/turboshaft/representations.h"
@@ -104,11 +105,15 @@ InstructionSelectorT<Adapter>::InstructionSelectorT(
       max_pushed_argument_count_(max_pushed_argument_count)
 #if V8_TARGET_ARCH_64_BIT
       ,
-      phi_states_(node_count, Upper32BitsState::kNotYetChecked, zone)
+      node_count_(node_count),
+      phi_states_(zone)
 #endif
 {
   if constexpr (Adapter::IsTurboshaft) {
     turboshaft_use_map_.emplace(*schedule_, zone);
+    protected_loads_to_remove_.emplace(static_cast<int>(node_count), zone);
+    additional_protected_instructions_.emplace(static_cast<int>(node_count),
+                                               zone);
   }
 
   DCHECK_EQ(*max_unoptimized_frame_height, 0);  // Caller-initialized.
@@ -123,7 +128,7 @@ InstructionSelectorT<Adapter>::InstructionSelectorT(
 }
 
 template <typename Adapter>
-base::Optional<BailoutReason>
+std::optional<BailoutReason>
 InstructionSelectorT<Adapter>::SelectInstructions() {
   // Mark the inputs of all phis in loop headers as used.
   block_range_t blocks = this->rpo_order(schedule());
@@ -175,7 +180,7 @@ InstructionSelectorT<Adapter>::SelectInstructions() {
 #if DEBUG
   sequence()->ValidateSSA();
 #endif
-  return base::nullopt;
+  return std::nullopt;
 }
 
 template <typename Adapter>
@@ -364,6 +369,27 @@ bool InstructionSelectorT<Adapter>::CanCover(node_t user, node_t node) const {
 }
 
 template <typename Adapter>
+bool InstructionSelectorT<Adapter>::CanCoverProtectedLoad(node_t user,
+                                                          node_t node) const {
+  if constexpr (Adapter::IsTurboshaft) {
+    DCHECK(CanCover(user, node));
+    const turboshaft::Graph* graph = this->turboshaft_graph();
+    for (turboshaft::OpIndex next = graph->NextIndex(node); next.valid();
+         next = graph->NextIndex(next)) {
+      if (next == user) break;
+      const turboshaft::Operation& op = graph->Get(next);
+      turboshaft::OpEffects effects = op.Effects();
+      if (effects.produces.control_flow || effects.required_when_unused) {
+        return false;
+      }
+    }
+    return true;
+  } else {
+    UNREACHABLE();
+  }
+}
+
+template <typename Adapter>
 bool InstructionSelectorT<Adapter>::IsOnlyUserOfNodeInSameBlock(
     node_t user, node_t node) const {
   block_t bb_user = this->block(schedule(), user);
@@ -547,6 +573,23 @@ bool InstructionSelectorT<Adapter>::IsUsed(node_t node) const {
 }
 
 template <typename Adapter>
+bool InstructionSelectorT<Adapter>::IsReallyUsed(node_t node) const {
+  DCHECK(this->valid(node));
+  if constexpr (Adapter::IsTurbofan) {
+    // TODO(bmeurer): This is a terrible monster hack, but we have to make sure
+    // that the Retain is actually emitted, otherwise the GC will mess up.
+    if (this->IsRetain(node)) return true;
+  } else {
+    static_assert(Adapter::IsTurboshaft);
+    if (!turboshaft::ShouldSkipOptimizationStep() &&
+        turboshaft::ShouldSkipOperation(this->Get(node))) {
+      return false;
+    }
+  }
+  return used_.Contains(this->id(node));
+}
+
+template <typename Adapter>
 void InstructionSelectorT<Adapter>::MarkAsUsed(node_t node) {
   DCHECK(this->valid(node));
   used_.Add(this->id(node));
@@ -645,14 +688,15 @@ InstructionOperand OperandForDeopt(Isolate* isolate,
         return g->UseImmediate(input);
       case Kind::kNumber:
         if (rep == MachineRepresentation::kWord32) {
-          const double d = constant->number();
+          const double d = constant->number().get_scalar();
           Tagged<Smi> smi = Smi::FromInt(static_cast<int32_t>(d));
           CHECK_EQ(smi.value(), d);
           return g->UseImmediate(static_cast<int32_t>(smi.ptr()));
         }
         return g->UseImmediate(input);
       case turboshaft::ConstantOp::Kind::kHeapObject:
-      case turboshaft::ConstantOp::Kind::kCompressedHeapObject: {
+      case turboshaft::ConstantOp::Kind::kCompressedHeapObject:
+      case turboshaft::ConstantOp::Kind::kTrustedHeapObject: {
         if (!CanBeTaggedOrCompressedPointer(rep)) {
           // If we have inconsistent static and dynamic types, e.g. if we
           // smi-check a string, we can get here with a heap object that
@@ -728,8 +772,9 @@ InstructionOperand OperandForDeopt(Isolate* isolate,
       } else {
         return g->UseImmediate(input);
       }
+    case IrOpcode::kHeapConstant:
     case IrOpcode::kCompressedHeapConstant:
-    case IrOpcode::kHeapConstant: {
+    case IrOpcode::kTrustedHeapConstant: {
       if (!CanBeTaggedOrCompressedPointer(rep)) {
         // If we have inconsistent static and dynamic types, e.g. if we
         // smi-check a string, we can get here with a heap object that
@@ -1578,7 +1623,7 @@ void InstructionSelectorT<Adapter>::InitializeCallBuffer(
     DCHECK_EQ(1 + frame_state_entries, buffer->instruction_args.size());
   }
 
-  size_t input_count = static_cast<size_t>(buffer->input_count());
+  size_t input_count = buffer->input_count();
 
   // Split the arguments into pushed_nodes and instruction_args. Pushed
   // arguments require an explicit push instruction before the call and do
@@ -1586,7 +1631,6 @@ void InstructionSelectorT<Adapter>::InitializeCallBuffer(
   // as an InstructionOperand argument to the call.
   auto arguments = call.arguments();
   auto iter(arguments.begin());
-  // call->inputs().begin());
   size_t pushed_count = 0;
   for (size_t index = 1; index < input_count; ++iter, ++index) {
     DCHECK_NE(iter, arguments.end());
@@ -1636,6 +1680,16 @@ void InstructionSelectorT<Adapter>::InitializeCallBuffer(
 }
 
 template <typename Adapter>
+void InstructionSelectorT<Adapter>::UpdateSourcePosition(
+    Instruction* instruction, node_t node) {
+  if constexpr (Adapter::IsTurboshaft) {
+    sequence()->SetSourcePosition(instruction, (*source_positions_)[node]);
+  } else {
+    UNREACHABLE();
+  }
+}
+
+template <typename Adapter>
 bool InstructionSelectorT<Adapter>::IsSourcePositionUsed(node_t node) {
   if (source_position_mode_ == InstructionSelector::kAllSourcePositions) {
     return true;
@@ -1671,6 +1725,9 @@ bool InstructionSelectorT<Adapter>::IsSourcePositionUsed(node_t node) {
       return lm->kind.with_trap_handler;
     }
 #endif
+    if (additional_protected_instructions_->Contains(this->id(node))) {
+      return true;
+    }
     return false;
   } else {
     switch (node->opcode()) {
@@ -1787,9 +1844,25 @@ void InstructionSelectorT<Adapter>::VisitBlock(block_t block) {
 
     SourcePosition source_position;
     if constexpr (Adapter::IsTurboshaft) {
+#if V8_ENABLE_WEBASSEMBLY && V8_TARGET_ARCH_X64
+      if (V8_UNLIKELY(
+              this->Get(node)
+                  .template Is<
+                      turboshaft::Opmask::kSimd128F64x2PromoteLowF32x4>())) {
+        // On x64 there exists an optimization that folds
+        // `kF64x2PromoteLowF32x4` and `kS128Load64Zero` together into a single
+        // instruction. If the instruction causes an out-of-bounds memory
+        // access exception, then the stack trace has to show the source
+        // position of the `kS128Load64Zero` and not of the
+        // `kF64x2PromoteLowF32x4`.
+        if (this->CanOptimizeF64x2PromoteLowF32x4(node)) {
+          node = this->input_at(node, 0);
+        }
+      }
+#endif  // V8_ENABLE_WEBASSEMBLY && V8_TARGET_ARCH_X64
       source_position = (*source_positions_)[node];
     } else {
-#if V8_ENABLE_WEBASSEMBLY
+#if V8_ENABLE_WEBASSEMBLY && V8_TARGET_ARCH_X64
       if (V8_UNLIKELY(node->opcode() == IrOpcode::kF64x2PromoteLowF32x4)) {
         // On x64 there exists an optimization that folds
         // `kF64x2PromoteLowF32x4` and `kS128Load64Zero` together into a single
@@ -1805,7 +1878,7 @@ void InstructionSelectorT<Adapter>::VisitBlock(block_t block) {
           node = input;
         }
       }
-#endif  // V8_ENABLE_WEBASSEMBLY
+#endif  // V8_ENABLE_WEBASSEMBLY && V8_TARGET_ARCH_X64
       source_position = source_positions_->GetSourcePosition(node);
     }
     if (source_position.IsKnown() && IsSourcePositionUsed(node)) {
@@ -1826,6 +1899,14 @@ void InstructionSelectorT<Adapter>::VisitBlock(block_t block) {
   // matching may cover more than one node at a time.
   for (node_t node : base::Reversed(this->nodes(block))) {
     int current_node_end = current_num_instructions();
+
+    if constexpr (Adapter::IsTurboshaft) {
+      if (protected_loads_to_remove_->Contains(this->id(node)) &&
+          !IsReallyUsed(node)) {
+        MarkAsDefined(node);
+      }
+    }
+
     if (!IsUsed(node)) {
       // Skip nodes that are unused, while marking them as Defined so that it's
       // clear that these unused nodes have been visited and will not be Defined
@@ -2276,7 +2357,7 @@ void InstructionSelectorT<Adapter>::VisitWord32AtomicPairCompareExchange(
         // && !V8_TARGET_ARCH_RISCV32
 
 #if !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_MIPS64 && \
-    !V8_TARGET_ARCH_S390 && !V8_TARGET_ARCH_PPC64 &&                          \
+    !V8_TARGET_ARCH_S390X && !V8_TARGET_ARCH_PPC64 &&                         \
     !V8_TARGET_ARCH_RISCV64 && !V8_TARGET_ARCH_LOONG64
 
 VISIT_UNSUPPORTED_OP(Word64AtomicLoad)
@@ -2290,7 +2371,7 @@ VISIT_UNSUPPORTED_OP(Word64AtomicExchange)
 VISIT_UNSUPPORTED_OP(Word64AtomicCompareExchange)
 
 #endif  // !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_PPC64
-        // !V8_TARGET_ARCH_MIPS64 && !V8_TARGET_ARCH_S390 &&
+        // !V8_TARGET_ARCH_MIPS64 && !V8_TARGET_ARCH_S390X &&
         // !V8_TARGET_ARCH_RISCV64 && !V8_TARGET_ARCH_LOONG64
 
 #if !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_RISCV32
@@ -2313,6 +2394,17 @@ IF_WASM(VISIT_UNSUPPORTED_OP, I64x2ReplaceLane)
         // !V8_TARGET_ARCH_RISCV64 && !V8_TARGET_ARCH_RISCV32
 #endif  // !V8_TARGET_ARCH_ARM64
 #endif  // !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_S390X && !V8_TARGET_ARCH_PPC64
+
+#if !V8_TARGET_ARCH_ARM64
+
+IF_WASM(VISIT_UNSUPPORTED_OP, I8x16AddReduce)
+IF_WASM(VISIT_UNSUPPORTED_OP, I16x8AddReduce)
+IF_WASM(VISIT_UNSUPPORTED_OP, I32x4AddReduce)
+IF_WASM(VISIT_UNSUPPORTED_OP, I64x2AddReduce)
+IF_WASM(VISIT_UNSUPPORTED_OP, F32x4AddReduce)
+IF_WASM(VISIT_UNSUPPORTED_OP, F64x2AddReduce)
+
+#endif  // !V8_TARGET_ARCH_ARM64
 
 template <>
 void InstructionSelectorT<TurbofanAdapter>::VisitFinishRegion(Node* node) {
@@ -2393,7 +2485,8 @@ void InstructionSelectorT<TurboshaftAdapter>::VisitProjection(
   using namespace turboshaft;  // NOLINT(build/namespaces)
   const ProjectionOp& projection = this->Get(node).Cast<ProjectionOp>();
   const Operation& value_op = this->Get(projection.input());
-  if (value_op.Is<OverflowCheckedBinopOp>() || value_op.Is<TryChangeOp>() ||
+  if (value_op.Is<OverflowCheckedBinopOp>() ||
+      value_op.Is<OverflowCheckedUnaryOp>() || value_op.Is<TryChangeOp>() ||
       value_op.Is<Word32PairBinopOp>()) {
     if (projection.index == 0u) {
       EmitIdentity(node);
@@ -2513,8 +2606,15 @@ void InstructionSelectorT<Adapter>::VisitCall(node_t node, block_t handler) {
   UpdateMaxPushedArgumentCount(buffer.pushed_nodes.size());
 
   if (call_descriptor->RequiresEntrypointTagForCall()) {
+    DCHECK(!call_descriptor->IsJSFunctionCall());
     buffer.instruction_args.push_back(
         g.TempImmediate(call_descriptor->shifted_tag()));
+  } else if (call_descriptor->IsJSFunctionCall()) {
+    // For JSFunctions we need to know the number of pushed parameters during
+    // code generation.
+    uint32_t parameter_count =
+        static_cast<uint32_t>(buffer.pushed_nodes.size());
+    buffer.instruction_args.push_back(g.TempImmediate(parameter_count));
   }
 
   // Pass label of exception handler block.
@@ -2774,10 +2874,15 @@ void InstructionSelectorT<Adapter>::TryPrepareScheduleFirstProjection(
   if constexpr (Adapter::IsTurboshaft) {
     using namespace turboshaft;  // NOLINT(build/namespaces)
     auto* binop = this->Get(node).template TryCast<OverflowCheckedBinopOp>();
-    if (binop == nullptr) return;
-    DCHECK(binop->kind == OverflowCheckedBinopOp::Kind::kSignedAdd ||
-           binop->kind == OverflowCheckedBinopOp::Kind::kSignedSub ||
-           binop->kind == OverflowCheckedBinopOp::Kind::kSignedMul);
+    auto* unop = this->Get(node).template TryCast<OverflowCheckedUnaryOp>();
+    if (binop == nullptr && unop == nullptr) return;
+    if (binop) {
+      DCHECK(binop->kind == OverflowCheckedBinopOp::Kind::kSignedAdd ||
+             binop->kind == OverflowCheckedBinopOp::Kind::kSignedSub ||
+             binop->kind == OverflowCheckedBinopOp::Kind::kSignedMul);
+    } else {
+      DCHECK_EQ(unop->kind, OverflowCheckedUnaryOp::Kind::kAbs);
+    }
   } else {
     switch (node->opcode()) {
       case IrOpcode::kInt32AddWithOverflow:
@@ -3249,6 +3354,8 @@ void InstructionSelectorT<TurbofanAdapter>::VisitNode(Node* node) {
       return MarkAsTagged(node), VisitConstant(node);
     case IrOpcode::kCompressedHeapConstant:
       return MarkAsCompressed(node), VisitConstant(node);
+    case IrOpcode::kTrustedHeapConstant:
+      return MarkAsTagged(node), VisitConstant(node);
     case IrOpcode::kNumberConstant: {
       double value = OpParameter<double>(node->op());
       if (!IsSmiDouble(value)) MarkAsTagged(node);
@@ -4225,6 +4332,68 @@ void InstructionSelectorT<TurbofanAdapter>::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitI16x8DotI8x16I7x16S(node);
     case IrOpcode::kI32x4DotI8x16I7x16AddS:
       return MarkAsSimd128(node), VisitI32x4DotI8x16I7x16AddS(node);
+    case IrOpcode::kF16x8Splat:
+      return MarkAsSimd128(node), VisitF16x8Splat(node);
+    case IrOpcode::kF16x8ExtractLane:
+      return MarkAsFloat32(node), VisitF16x8ExtractLane(node);
+    case IrOpcode::kF16x8ReplaceLane:
+      return MarkAsSimd128(node), VisitF16x8ReplaceLane(node);
+    case IrOpcode::kF16x8Abs:
+      return MarkAsSimd128(node), VisitF16x8Abs(node);
+    case IrOpcode::kF16x8Neg:
+      return MarkAsSimd128(node), VisitF16x8Neg(node);
+    case IrOpcode::kF16x8Sqrt:
+      return MarkAsSimd128(node), VisitF16x8Sqrt(node);
+    case IrOpcode::kF16x8Ceil:
+      return MarkAsSimd128(node), VisitF16x8Ceil(node);
+    case IrOpcode::kF16x8Floor:
+      return MarkAsSimd128(node), VisitF16x8Floor(node);
+    case IrOpcode::kF16x8Trunc:
+      return MarkAsSimd128(node), VisitF16x8Trunc(node);
+    case IrOpcode::kF16x8NearestInt:
+      return MarkAsSimd128(node), VisitF16x8NearestInt(node);
+    case IrOpcode::kF16x8Add:
+      return MarkAsSimd128(node), VisitF16x8Add(node);
+    case IrOpcode::kF16x8Sub:
+      return MarkAsSimd128(node), VisitF16x8Sub(node);
+    case IrOpcode::kF16x8Mul:
+      return MarkAsSimd128(node), VisitF16x8Mul(node);
+    case IrOpcode::kF16x8Div:
+      return MarkAsSimd128(node), VisitF16x8Div(node);
+    case IrOpcode::kF16x8Min:
+      return MarkAsSimd128(node), VisitF16x8Min(node);
+    case IrOpcode::kF16x8Max:
+      return MarkAsSimd128(node), VisitF16x8Max(node);
+    case IrOpcode::kF16x8Pmin:
+      return MarkAsSimd128(node), VisitF16x8Pmin(node);
+    case IrOpcode::kF16x8Pmax:
+      return MarkAsSimd128(node), VisitF16x8Pmax(node);
+    case IrOpcode::kF16x8Eq:
+      return MarkAsSimd128(node), VisitF16x8Eq(node);
+    case IrOpcode::kF16x8Ne:
+      return MarkAsSimd128(node), VisitF16x8Ne(node);
+    case IrOpcode::kF16x8Lt:
+      return MarkAsSimd128(node), VisitF16x8Lt(node);
+    case IrOpcode::kF16x8Le:
+      return MarkAsSimd128(node), VisitF16x8Le(node);
+    case IrOpcode::kF16x8SConvertI16x8:
+      return MarkAsSimd128(node), VisitF16x8SConvertI16x8(node);
+    case IrOpcode::kF16x8UConvertI16x8:
+      return MarkAsSimd128(node), VisitF16x8UConvertI16x8(node);
+    case IrOpcode::kI16x8UConvertF16x8:
+      return MarkAsSimd128(node), VisitI16x8UConvertF16x8(node);
+    case IrOpcode::kI16x8SConvertF16x8:
+      return MarkAsSimd128(node), VisitI16x8SConvertF16x8(node);
+    case IrOpcode::kF16x8DemoteF32x4Zero:
+      return MarkAsSimd128(node), VisitF16x8DemoteF32x4Zero(node);
+    case IrOpcode::kF16x8DemoteF64x2Zero:
+      return MarkAsSimd128(node), VisitF16x8DemoteF64x2Zero(node);
+    case IrOpcode::kF32x4PromoteLowF16x8:
+      return MarkAsSimd128(node), VisitF32x4PromoteLowF16x8(node);
+    case IrOpcode::kF16x8Qfma:
+      return MarkAsSimd128(node), VisitF16x8Qfma(node);
+    case IrOpcode::kF16x8Qfms:
+      return MarkAsSimd128(node), VisitF16x8Qfms(node);
 
       // SIMD256
 #if defined(V8_TARGET_ARCH_X64) && defined(V8_ENABLE_WASM_SIMD256_REVEC)
@@ -4564,6 +4733,9 @@ void InstructionSelectorT<TurboshaftAdapter>::VisitNode(
       // Those are already handled in VisitControl.
       DCHECK(op.IsBlockTerminator());
       break;
+    case Opcode::kIdentity:
+      EmitIdentity(node);
+      break;
     case Opcode::kParameter: {
       // Parameters should always be scheduled to the first block.
       DCHECK_EQ(this->rpo_number(this->block(schedule(), node)).ToInt(), 0);
@@ -4743,17 +4915,19 @@ void InstructionSelectorT<TurboshaftAdapter>::VisitNode(
           MarkAsFloat64(node);
           break;
         case ConstantOp::Kind::kHeapObject:
+        case ConstantOp::Kind::kTrustedHeapObject:
           MarkAsTagged(node);
           break;
         case ConstantOp::Kind::kCompressedHeapObject:
           MarkAsCompressed(node);
           break;
         case ConstantOp::Kind::kNumber:
-          if (!IsSmiDouble(constant.number())) MarkAsTagged(node);
+          if (!IsSmiDouble(constant.number().get_scalar())) MarkAsTagged(node);
           break;
         case ConstantOp::Kind::kRelocatableWasmCall:
         case ConstantOp::Kind::kRelocatableWasmStubCall:
         case ConstantOp::Kind::kRelocatableWasmCanonicalSignatureId:
+        case ConstantOp::Kind::kRelocatableWasmIndirectCallTarget:
           break;
       }
       VisitConstant(node);
@@ -5037,6 +5211,24 @@ void InstructionSelectorT<TurboshaftAdapter>::VisitNode(
       }
       UNREACHABLE();
     }
+    case Opcode::kOverflowCheckedUnary: {
+      const auto& unop = op.Cast<OverflowCheckedUnaryOp>();
+      if (unop.rep == WordRepresentation::Word32()) {
+        MarkAsWord32(node);
+        switch (unop.kind) {
+          case OverflowCheckedUnaryOp::Kind::kAbs:
+            return VisitInt32AbsWithOverflow(node);
+        }
+      } else {
+        DCHECK_EQ(unop.rep, WordRepresentation::Word64());
+        MarkAsWord64(node);
+        switch (unop.kind) {
+          case OverflowCheckedUnaryOp::Kind::kAbs:
+            return VisitInt64AbsWithOverflow(node);
+        }
+      }
+      UNREACHABLE();
+    }
     case Opcode::kShift: {
       const auto& shift = op.Cast<ShiftOp>();
       if (shift.rep == RegisterRepresentation::Word32()) {
@@ -5287,6 +5479,8 @@ void InstructionSelectorT<TurboshaftAdapter>::VisitNode(
       return;
     case Opcode::kDebugBreak:
       return VisitDebugBreak(node);
+    case Opcode::kAbortCSADcheck:
+      return VisitAbortCSADcheck(node);
     case Opcode::kSelect: {
       const SelectOp& select = op.Cast<SelectOp>();
       // If there is a Select, then it should only be one that is supported by
@@ -5410,6 +5604,24 @@ void InstructionSelectorT<TurboshaftAdapter>::VisitNode(
 #undef VISIT_SIMD_UNARY
       }
     }
+    case Opcode::kSimd128Reduce: {
+      const Simd128ReduceOp& reduce = op.Cast<Simd128ReduceOp>();
+      MarkAsSimd128(node);
+      switch (reduce.kind) {
+        case Simd128ReduceOp::Kind::kI8x16AddReduce:
+          return VisitI8x16AddReduce(node);
+        case Simd128ReduceOp::Kind::kI16x8AddReduce:
+          return VisitI16x8AddReduce(node);
+        case Simd128ReduceOp::Kind::kI32x4AddReduce:
+          return VisitI32x4AddReduce(node);
+        case Simd128ReduceOp::Kind::kI64x2AddReduce:
+          return VisitI64x2AddReduce(node);
+        case Simd128ReduceOp::Kind::kF32x4AddReduce:
+          return VisitF32x4AddReduce(node);
+        case Simd128ReduceOp::Kind::kF64x2AddReduce:
+          return VisitF64x2AddReduce(node);
+      }
+    }
     case Opcode::kSimd128Binop: {
       const Simd128BinopOp& binop = op.Cast<Simd128BinopOp>();
       MarkAsSimd128(node);
@@ -5469,6 +5681,8 @@ void InstructionSelectorT<TurboshaftAdapter>::VisitNode(
           return VisitI32x4ReplaceLane(node);
         case Simd128ReplaceLaneOp::Kind::kI64x2:
           return VisitI64x2ReplaceLane(node);
+        case Simd128ReplaceLaneOp::Kind::kF16x8:
+          return VisitF16x8ReplaceLane(node);
         case Simd128ReplaceLaneOp::Kind::kF32x4:
           return VisitF32x4ReplaceLane(node);
         case Simd128ReplaceLaneOp::Kind::kF64x2:
@@ -5496,6 +5710,9 @@ void InstructionSelectorT<TurboshaftAdapter>::VisitNode(
         case Simd128ExtractLaneOp::Kind::kI64x2:
           MarkAsWord64(node);
           return VisitI64x2ExtractLane(node);
+        case Simd128ExtractLaneOp::Kind::kF16x8:
+          MarkAsFloat32(node);
+          return VisitF16x8ExtractLane(node);
         case Simd128ExtractLaneOp::Kind::kF32x4:
           MarkAsFloat32(node);
           return VisitF32x4ExtractLane(node);
@@ -5670,17 +5887,18 @@ bool InstructionSelectorT<Adapter>::ZeroExtendsWord32ToWord64(
   const int kMaxRecursionDepth = 100;
 
   if (this->IsPhi(node)) {
-    // Intermediate results from previous calls are not necessarily correct.
     if (recursion_depth == 0) {
-      static_assert(sizeof(Upper32BitsState) == 1);
-      memset(phi_states_.data(),
-             static_cast<int>(Upper32BitsState::kNotYetChecked),
-             phi_states_.size());
+      if (phi_states_.empty()) {
+        // This vector is lazily allocated because the majority of compilations
+        // never use it.
+        phi_states_ = ZoneVector<Upper32BitsState>(
+            node_count_, Upper32BitsState::kNotYetChecked, zone());
+      }
     }
 
     Upper32BitsState current = phi_states_[this->id(node)];
     if (current != Upper32BitsState::kNotYetChecked) {
-      return current == Upper32BitsState::kUpperBitsGuaranteedZero;
+      return current == Upper32BitsState::kZero;
     }
 
     // If further recursion is prevented, we can't make any assumptions about
@@ -5689,16 +5907,16 @@ bool InstructionSelectorT<Adapter>::ZeroExtendsWord32ToWord64(
       return false;
     }
 
-    // Mark the current node so that we skip it if we recursively visit it
-    // again. Or, said differently, we compute a largest fixed-point so we can
-    // be optimistic when we hit cycles.
-    phi_states_[this->id(node)] = Upper32BitsState::kUpperBitsGuaranteedZero;
+    // Optimistically mark the current node as zero-extended so that we skip it
+    // if we recursively visit it again due to a cycle. If this optimistic guess
+    // is wrong, it will be corrected in MarkNodeAsNotZeroExtended.
+    phi_states_[this->id(node)] = Upper32BitsState::kZero;
 
     int input_count = this->value_input_count(node);
     for (int i = 0; i < input_count; ++i) {
       node_t input = this->input_at(node, i);
       if (!ZeroExtendsWord32ToWord64(input, recursion_depth + 1)) {
-        phi_states_[this->id(node)] = Upper32BitsState::kNoGuarantee;
+        MarkNodeAsNotZeroExtended(node);
         return false;
       }
     }
@@ -5706,6 +5924,36 @@ bool InstructionSelectorT<Adapter>::ZeroExtendsWord32ToWord64(
     return true;
   }
   return ZeroExtendsWord32ToWord64NoPhis(node);
+}
+
+template <typename Adapter>
+void InstructionSelectorT<Adapter>::MarkNodeAsNotZeroExtended(node_t node) {
+  if (phi_states_[this->id(node)] == Upper32BitsState::kMayBeNonZero) return;
+  phi_states_[this->id(node)] = Upper32BitsState::kMayBeNonZero;
+  ZoneVector<node_t> worklist(zone_);
+  worklist.push_back(node);
+  while (!worklist.empty()) {
+    node = worklist.back();
+    worklist.pop_back();
+    // We may have previously marked some uses of this node as zero-extended,
+    // but that optimistic guess was proven incorrect.
+    if constexpr (Adapter::IsTurboshaft) {
+      for (turboshaft::OpIndex use : turboshaft_uses(node)) {
+        if (phi_states_[this->id(use)] == Upper32BitsState::kZero) {
+          phi_states_[this->id(use)] = Upper32BitsState::kMayBeNonZero;
+          worklist.push_back(use);
+        }
+      }
+    } else {
+      for (Edge edge : node->use_edges()) {
+        Node* use = edge.from();
+        if (phi_states_[this->id(use)] == Upper32BitsState::kZero) {
+          phi_states_[this->id(use)] = Upper32BitsState::kMayBeNonZero;
+          worklist.push_back(use);
+        }
+      }
+    }
+  }
 }
 #endif  // V8_TARGET_ARCH_64_BIT
 
@@ -5885,7 +6133,7 @@ InstructionSelector::~InstructionSelector() {
     return turboshaft_impl_->__VA_ARGS__;        \
   }
 
-base::Optional<BailoutReason> InstructionSelector::SelectInstructions() {
+std::optional<BailoutReason> InstructionSelector::SelectInstructions() {
   DISPATCH_TO_IMPL(SelectInstructions())
 }
 

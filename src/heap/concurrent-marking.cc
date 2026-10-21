@@ -19,6 +19,8 @@
 #include "src/heap/gc-tracer-inl.h"
 #include "src/heap/gc-tracer.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/heap-layout-inl.h"
+#include "src/heap/heap-utils-inl.h"
 #include "src/heap/heap.h"
 #include "src/heap/mark-compact-inl.h"
 #include "src/heap/mark-compact.h"
@@ -27,6 +29,7 @@
 #include "src/heap/marking-visitor.h"
 #include "src/heap/marking.h"
 #include "src/heap/memory-chunk-metadata.h"
+#include "src/heap/memory-chunk.h"
 #include "src/heap/memory-measurement-inl.h"
 #include "src/heap/memory-measurement.h"
 #include "src/heap/minor-mark-sweep-inl.h"
@@ -315,8 +318,8 @@ void ConcurrentMarking::RunMajor(JobDelegate* delegate,
           done = true;
           break;
         }
-        DCHECK(!InReadOnlySpace(object));
-        DCHECK_EQ(GetIsolateFromWritableObject(object), isolate);
+        DCHECK(!HeapLayout::InReadOnlySpace(object));
+        DCHECK_EQ(HeapUtils::GetOwnerHeap(object), heap_);
         objects_processed++;
 
         Address new_space_top = kNullAddress;
@@ -571,7 +574,8 @@ size_t ConcurrentMarking::GetMinorMaxConcurrency(size_t worker_count) {
 
 void ConcurrentMarking::TryScheduleJob(GarbageCollector garbage_collector,
                                        TaskPriority priority) {
-  DCHECK(v8_flags.parallel_marking || v8_flags.concurrent_marking);
+  DCHECK(v8_flags.parallel_marking || v8_flags.concurrent_marking ||
+         v8_flags.concurrent_minor_ms_marking);
   DCHECK(!heap_->IsTearingDown());
   DCHECK(IsStopped());
 
@@ -645,7 +649,8 @@ bool ConcurrentMarking::IsWorkLeft() const {
 
 void ConcurrentMarking::RescheduleJobIfNeeded(
     GarbageCollector garbage_collector, TaskPriority priority) {
-  DCHECK(v8_flags.parallel_marking || v8_flags.concurrent_marking);
+  DCHECK(v8_flags.parallel_marking || v8_flags.concurrent_marking ||
+         v8_flags.concurrent_minor_ms_marking);
 
   if (garbage_collector == GarbageCollector::MARK_COMPACTOR &&
       !heap_->mark_compact_collector()->UseBackgroundThreadsInCycle()) {
@@ -696,7 +701,8 @@ void ConcurrentMarking::FlushPretenuringFeedback() {
 }
 
 void ConcurrentMarking::Join() {
-  DCHECK(v8_flags.parallel_marking || v8_flags.concurrent_marking);
+  DCHECK(v8_flags.parallel_marking || v8_flags.concurrent_marking ||
+         v8_flags.concurrent_minor_ms_marking);
   DCHECK_IMPLIES(
       garbage_collector_ == GarbageCollector::MARK_COMPACTOR,
       heap_->mark_compact_collector()->UseBackgroundThreadsInCycle());

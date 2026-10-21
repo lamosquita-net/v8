@@ -262,7 +262,7 @@ enum class ArrayBufferViewTag : uint8_t {
 
 // Sub-tags only meaningful for error serialization.
 enum class ErrorTag : uint8_t {
-  // The error is a EvalError. No accompanying data.
+  // The error is an EvalError. No accompanying data.
   kEvalErrorPrototype = 'E',
   // The error is a RangeError. No accompanying data.
   kRangeErrorPrototype = 'R',
@@ -1464,6 +1464,17 @@ Maybe<base::Vector<const uint8_t>> ValueDeserializer::ReadRawBytes(
   return Just(base::Vector<const uint8_t>(start, size));
 }
 
+Maybe<base::Vector<const base::uc16>> ValueDeserializer::ReadRawTwoBytes(
+    size_t size) {
+  if (size > static_cast<size_t>(end_ - position_) ||
+      size % sizeof(base::uc16) != 0) {
+    return Nothing<base::Vector<const base::uc16>>();
+  }
+  const base::uc16* start = (const base::uc16*)(position_);
+  position_ += size;
+  return Just(base::Vector<const base::uc16>(start, size / sizeof(base::uc16)));
+}
+
 bool ValueDeserializer::ReadByte(uint8_t* value) {
   if (static_cast<size_t>(end_ - position_) < sizeof(uint8_t)) return false;
   *value = *position_;
@@ -2239,7 +2250,7 @@ MaybeHandle<Object> ValueDeserializer::ReadJSError() {
   }
 
   // Check for message property.
-  Handle<Object> message = isolate_->factory()->undefined_value();
+  DirectHandle<Object> message = isolate_->factory()->undefined_value();
   if (static_cast<ErrorTag>(tag) == ErrorTag::kMessage) {
     Handle<String> message_string;
     if (!ReadString().ToHandle(&message_string)) {
@@ -2322,7 +2333,8 @@ MaybeHandle<WasmMemoryObject> ValueDeserializer::ReadWasmMemory() {
   uint8_t memory64_byte;
   if (!ReadByte(&memory64_byte)) return {};
   if (memory64_byte > 1) return {};
-  bool is_memory64 = memory64_byte;
+  wasm::IndexType index_type =
+      memory64_byte ? wasm::IndexType::kI64 : wasm::IndexType::kI32;
 
   Handle<Object> buffer_object;
   if (!ReadObject().ToHandle(&buffer_object)) return {};
@@ -2332,9 +2344,7 @@ MaybeHandle<WasmMemoryObject> ValueDeserializer::ReadWasmMemory() {
   if (!buffer->is_shared()) return {};
 
   Handle<WasmMemoryObject> result =
-      WasmMemoryObject::New(isolate_, buffer, maximum_pages,
-                            is_memory64 ? WasmMemoryFlag::kWasmMemory64
-                                        : WasmMemoryFlag::kWasmMemory32);
+      WasmMemoryObject::New(isolate_, buffer, maximum_pages, index_type);
 
   AddObjectWithID(id, result);
   return result;
@@ -2449,6 +2459,12 @@ Maybe<uint32_t> ValueDeserializer::ReadJSObjectProperties(
         return Just(static_cast<uint32_t>(properties.size()));
       }
 
+      // Determine the key to be used and the target map to transition to, if
+      // possible. Transitioning may abort if the key is not a string, or if no
+      // transition was found.
+      Handle<Object> key;
+      Handle<Map> target;
+      bool transition_was_found = false;
       const uint8_t* start_position = position_;
       uint32_t byte_length;
       if (!ReadTag().To(&tag) || !ReadVarint<uint32_t>().To(&byte_length)) {
@@ -2459,25 +2475,33 @@ Maybe<uint32_t> ValueDeserializer::ReadJSObjectProperties(
       CHECK_LE(byte_length,
                static_cast<uint32_t>(std::numeric_limits<int32_t>::max()));
 #endif  // V8_VALUE_DESERIALIZER_HARD_FAIL
-
-      // Determine the key to be used and the target map to transition to, if
-      // possible. Transitioning may abort if the key is not a string, or if no
-      // transition was found.
-      Handle<Object> key;
-      Handle<Map> target;
       std::pair<Handle<String>, Handle<Map>> expected_transition;
       {
         TransitionsAccessor transitions(isolate_, *map);
-        base::Vector<const uint8_t> key_chars(position_, byte_length);
-        auto expected_transition = transitions.ExpectedTransition(key_chars);
+        if (tag == SerializationTag::kOneByteString) {
+          base::Vector<const uint8_t> key_chars;
+          if (ReadRawBytes(byte_length).To(&key_chars)) {
+            expected_transition = transitions.ExpectedTransition(key_chars);
+          }
+        } else if (tag == SerializationTag::kTwoByteString) {
+          base::Vector<const base::uc16> key_chars;
+          if (ReadRawTwoBytes(byte_length).To(&key_chars)) {
+            expected_transition = transitions.ExpectedTransition(key_chars);
+          }
+        } else if (tag == SerializationTag::kUtf8String) {
+          base::Vector<const uint8_t> key_chars;
+          if (ReadRawBytes(byte_length).To(&key_chars) &&
+              String::IsAscii(key_chars.begin(), key_chars.length())) {
+            expected_transition = transitions.ExpectedTransition(key_chars);
+          }
+        }
         if (!expected_transition.first.is_null()) {
+          transition_was_found = true;
+          key = expected_transition.first;
           target = expected_transition.second;
         }
       }
-      if (!expected_transition.first.is_null()) {
-        key = expected_transition.first;
-        position_ += byte_length;
-      } else {
+      if (!transition_was_found) {
         position_ = start_position;
         if (!ReadObject().ToHandle(&key) || !IsValidObjectKey(*key, isolate_)) {
           return Nothing<uint32_t>();

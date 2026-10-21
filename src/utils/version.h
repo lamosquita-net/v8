@@ -27,9 +27,25 @@ class V8_EXPORT Version {
   static int GetPatch() { return patch_; }
   static const char* GetEmbedder() { return embedder_; }
   static bool IsCandidate() { return candidate_; }
+  // FlyWeb: V8 code caches (Code Cache/js, service workers) are only checked
+  // against this hash and the non-default flags, so FlyWeb's own V8 changes
+  // (new builtins, runtime functions, flags shipped by default) would accept
+  // code cached by an earlier FlyWeb and crash. Raise kFlyWebCacheEpoch with
+  // every change to FlyWeb's V8 patches. 2 = FlyWeb 1.1.1 (V8 11.6), 3 = V8
+  // 11.6 with Promise.withResolvers. From engine level 118 each level has its
+  // own V8 version, which changes the hash by itself; still raise it when the
+  // patches change within the same V8 version. 4 = FlyWeb 1.10 (V8 12.6
+  // with the gni patch), 5 = engine level 127 (V8 12.7), 6 = seg/v8-12.7,
+  // 7 = FM.17 development branch with v8 aaa23fc87, 8 = reserved for the
+  // next seg/v8-12.7, 9 = FM.17 on V8 12.8 (nube/v8-12.8-api), 10 = FlyWeb
+  // 1.11.2 (V8 12.8 with SEGURIDAD's backports, seg/v8-12.8), 11 = the same
+  // with v8 3349cb9fd (microtask completed callbacks), 12 = seg/v8-12.8,
+  // 13 = seg/v8-12.9 (FlyWeb 1.13), 14 = reserved (never shipped),
+  // 15 = seg/v8-13.0 (FlyWeb 1.14), 16 = seg/v8-13.1 (FlyWeb 1.15).
+  static constexpr int kFlyWebCacheEpoch = 16;
   static uint32_t Hash() {
-    return static_cast<uint32_t>(
-        base::hash_combine(major_, minor_, build_, patch_));
+    return static_cast<uint32_t>(base::hash_combine(
+        major_, minor_, build_, patch_, kFlyWebCacheEpoch));
   }
 
   // Calculate the V8 version string.

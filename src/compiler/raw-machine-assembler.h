@@ -6,18 +6,19 @@
 #define V8_COMPILER_RAW_MACHINE_ASSEMBLER_H_
 
 #include <initializer_list>
+#include <optional>
 #include <type_traits>
 
 #include "src/common/globals.h"
 #include "src/compiler/access-builder.h"
 #include "src/compiler/common-operator.h"
-#include "src/compiler/graph.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/node.h"
 #include "src/compiler/operator.h"
 #include "src/compiler/simplified-operator.h"
+#include "src/compiler/turbofan-graph.h"
 #include "src/compiler/write-barrier-kind.h"
 #include "src/execution/isolate.h"
 #include "src/heap/factory.h"
@@ -1032,7 +1033,7 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
 
   // Call to a C function.
   template <class... CArgs>
-  Node* CallCFunction(Node* function, base::Optional<MachineType> return_type,
+  Node* CallCFunction(Node* function, std::optional<MachineType> return_type,
                       CArgs... cargs) {
     static_assert(
         std::conjunction_v<std::is_convertible<CArgs, CFunctionArg>...>,
@@ -1040,7 +1041,7 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
     return CallCFunction(function, return_type, {cargs...});
   }
 
-  Node* CallCFunction(Node* function, base::Optional<MachineType> return_type,
+  Node* CallCFunction(Node* function, std::optional<MachineType> return_type,
                       std::initializer_list<CFunctionArg> args);
 
   // Call to a C function without a function discriptor on AIX.

@@ -9,36 +9,25 @@
 namespace v8 {
 namespace internal {
 
-namespace {
-Handle<Script> GetEvalOrigin(Isolate* isolate, Tagged<Script> origin_script) {
-  DisallowGarbageCollection no_gc;
-  while (origin_script->has_eval_from_shared()) {
-    Tagged<HeapObject> maybe_script =
-        origin_script->eval_from_shared()->script();
-    CHECK(IsScript(maybe_script));
-    origin_script = Cast<Script>(maybe_script);
-  }
-  return handle(origin_script, isolate);
-}
-}  // namespace
-
 RUNTIME_FUNCTION(Runtime_DynamicImportCall) {
   HandleScope scope(isolate);
-  DCHECK_LE(2, args.length());
-  DCHECK_GE(3, args.length());
+  DCHECK_LE(3, args.length());
+  DCHECK_GE(4, args.length());
   DirectHandle<JSFunction> function = args.at<JSFunction>(0);
   Handle<Object> specifier = args.at(1);
+  ModuleImportPhase phase =
+      static_cast<ModuleImportPhase>(args.smi_value_at(2));
 
   MaybeHandle<Object> import_options;
-  if (args.length() == 3) {
-    import_options = args.at<Object>(2);
+  if (args.length() == 4) {
+    import_options = args.at<Object>(3);
   }
 
-  Handle<Script> referrer_script =
-      GetEvalOrigin(isolate, Cast<Script>(function->shared()->script()));
-  RETURN_RESULT_OR_FAILURE(isolate,
-                           isolate->RunHostImportModuleDynamicallyCallback(
-                               referrer_script, specifier, import_options));
+  Handle<Script> referrer_script = handle(
+      Cast<Script>(function->shared()->script())->GetEvalOrigin(), isolate);
+  RETURN_RESULT_OR_FAILURE(
+      isolate, isolate->RunHostImportModuleDynamicallyCallback(
+                   referrer_script, specifier, phase, import_options));
 }
 
 RUNTIME_FUNCTION(Runtime_GetModuleNamespace) {

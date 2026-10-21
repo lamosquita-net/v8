@@ -48,7 +48,8 @@
   V(ExternalConstant)                \
   V(NumberConstant)                  \
   V(PointerConstant)                 \
-  V(HeapConstant)
+  V(HeapConstant)                    \
+  V(TrustedHeapConstant)
 
 // Opcodes for constant operators.
 #define CONSTANT_OP_LIST(V)    \
@@ -815,6 +816,7 @@
   V(ChangeUint32ToFloat64)               \
   V(ChangeUint32ToUint64)                \
   V(TruncateFloat64ToFloat32)            \
+  V(TruncateFloat64ToFloat16)            \
   V(TruncateInt64ToInt32)                \
   V(RoundFloat64ToInt32)                 \
   V(RoundInt32ToFloat32)                 \
@@ -919,6 +921,39 @@
   IF_WASM(V, F32x4Trunc)                  \
   IF_WASM(V, F32x4NearestInt)             \
   IF_WASM(V, F32x4DemoteF64x2Zero)        \
+  IF_WASM(V, F16x8Splat)                  \
+  IF_WASM(V, F16x8ExtractLane)            \
+  IF_WASM(V, F16x8ReplaceLane)            \
+  IF_WASM(V, F16x8Abs)                    \
+  IF_WASM(V, F16x8Neg)                    \
+  IF_WASM(V, F16x8Sqrt)                   \
+  IF_WASM(V, F16x8Ceil)                   \
+  IF_WASM(V, F16x8Floor)                  \
+  IF_WASM(V, F16x8Trunc)                  \
+  IF_WASM(V, F16x8NearestInt)             \
+  IF_WASM(V, F16x8Add)                    \
+  IF_WASM(V, F16x8Sub)                    \
+  IF_WASM(V, F16x8Mul)                    \
+  IF_WASM(V, F16x8Div)                    \
+  IF_WASM(V, F16x8Min)                    \
+  IF_WASM(V, F16x8Max)                    \
+  IF_WASM(V, F16x8Pmin)                   \
+  IF_WASM(V, F16x8Pmax)                   \
+  IF_WASM(V, F16x8Eq)                     \
+  IF_WASM(V, F16x8Ne)                     \
+  IF_WASM(V, F16x8Lt)                     \
+  IF_WASM(V, F16x8Le)                     \
+  IF_WASM(V, F16x8Gt)                     \
+  IF_WASM(V, F16x8Ge)                     \
+  IF_WASM(V, I16x8SConvertF16x8)          \
+  IF_WASM(V, I16x8UConvertF16x8)          \
+  IF_WASM(V, F16x8SConvertI16x8)          \
+  IF_WASM(V, F16x8UConvertI16x8)          \
+  IF_WASM(V, F16x8DemoteF32x4Zero)        \
+  IF_WASM(V, F16x8DemoteF64x2Zero)        \
+  IF_WASM(V, F32x4PromoteLowF16x8)        \
+  IF_WASM(V, F16x8Qfma)                   \
+  IF_WASM(V, F16x8Qfms)                   \
   IF_WASM(V, I64x2Splat)                  \
   IF_WASM(V, I64x2SplatI32Pair)           \
   IF_WASM(V, I64x2ExtractLane)            \
@@ -1089,6 +1124,12 @@
   IF_WASM(V, I16x8RelaxedQ15MulRS)        \
   IF_WASM(V, I16x8DotI8x16I7x16S)         \
   IF_WASM(V, I32x4DotI8x16I7x16AddS)      \
+  IF_WASM(V, I8x16AddReduce)              \
+  IF_WASM(V, I16x8AddReduce)              \
+  IF_WASM(V, I32x4AddReduce)              \
+  IF_WASM(V, I64x2AddReduce)              \
+  IF_WASM(V, F32x4AddReduce)              \
+  IF_WASM(V, F64x2AddReduce)              \
   IF_WASM(V, I8x16Shuffle)                \
   IF_WASM(V, V128AnyTrue)                 \
   IF_WASM(V, I64x2AllTrue)                \

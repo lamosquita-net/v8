@@ -1105,14 +1105,12 @@ MaybeHandle<JSNumberFormat> JSNumberFormat::New(Isolate* isolate,
   // 10. Let r be ResolveLocale(%NumberFormat%.[[AvailableLocales]],
   // requestedLocales, opt,  %NumberFormat%.[[RelevantExtensionKeys]],
   // localeData).
-  std::set<std::string> relevant_extension_keys{"nu"};
-  Maybe<Intl::ResolvedLocale> maybe_resolve_locale =
-      Intl::ResolveLocale(isolate, JSNumberFormat::GetAvailableLocales(),
-                          requested_locales, matcher, relevant_extension_keys);
-  if (maybe_resolve_locale.IsNothing()) {
+  Intl::ResolvedLocale r;
+  if (!Intl::ResolveLocale(isolate, JSNumberFormat::GetAvailableLocales(),
+                           requested_locales, matcher, {"nu"})
+           .To(&r)) {
     THROW_NEW_ERROR(isolate, NewRangeError(MessageTemplate::kIcuError));
   }
-  Intl::ResolvedLocale r = maybe_resolve_locale.FromJust();
 
   icu::Locale icu_locale = r.icu_locale;
   UErrorCode status = U_ZERO_ERROR;
@@ -1725,8 +1723,8 @@ Maybe<IntlMathematicalValue> IntlMathematicalValue::From(Isolate* isolate,
     uint16_t ch = string->Get(1);
     if (ch == 'b' || ch == 'B' || ch == 'o' || ch == 'O' || ch == 'x' ||
         ch == 'X') {
-      result.approx_ = StringToDouble(
-          isolate, string, ALLOW_HEX | ALLOW_OCTAL | ALLOW_BINARY, 0);
+      result.approx_ =
+          StringToDouble(isolate, string, ALLOW_NON_DECIMAL_PREFIX, 0);
       // If approx is within the precision, just return as Number.
       if (result.approx_ < kMaxSafeInteger) {
         result.value_ = isolate->factory()->NewNumber(result.approx_);
@@ -1746,7 +1744,7 @@ Maybe<IntlMathematicalValue> IntlMathematicalValue::From(Isolate* isolate,
   }
   // If it does not fit StrDecimalLiteral StrWhiteSpace_opt, StringToDouble will
   // parse it as NaN, in that case, return NaN.
-  result.approx_ = StringToDouble(isolate, string, NO_CONVERSION_FLAGS, 0);
+  result.approx_ = StringToDouble(isolate, string, NO_CONVERSION_FLAG, 0);
   if (std::isnan(result.approx_)) {
     result.value_ = factory->nan_value();
     return Just(result);
@@ -1909,7 +1907,7 @@ Maybe<int> ConstructParts(Isolate* isolate,
                           const icu::FormattedValue& formatted,
                           Handle<JSArray> result, int start_index,
                           bool style_is_unit, bool is_nan, bool output_source,
-                          bool output_unit, Handle<String> unit) {
+                          bool output_unit, DirectHandle<String> unit) {
   UErrorCode status = U_ZERO_ERROR;
   icu::UnicodeString formatted_text = formatted.toString(status);
   if (U_FAILURE(status)) {
@@ -1947,7 +1945,8 @@ Maybe<int> ConstructParts(Isolate* isolate,
 
   for (auto it = parts.begin(); it < parts.end(); it++) {
     NumberFormatSpan part = *it;
-    Handle<String> field_type_string = isolate->factory()->literal_string();
+    DirectHandle<String> field_type_string =
+        isolate->factory()->literal_string();
     if (part.field_id != -1) {
       if (style_is_unit && static_cast<UNumberFormatFields>(part.field_id) ==
                                UNUM_PERCENT_FIELD) {
@@ -1989,7 +1988,7 @@ Maybe<int> ConstructParts(Isolate* isolate,
 Maybe<int> Intl::AddNumberElements(Isolate* isolate,
                                    const icu::FormattedValue& formatted,
                                    Handle<JSArray> result, int start_index,
-                                   Handle<String> unit) {
+                                   DirectHandle<String> unit) {
   return ConstructParts(isolate, formatted, result, start_index, true, false,
                         false, true, unit);
 }

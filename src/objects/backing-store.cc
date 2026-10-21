@@ -5,6 +5,7 @@
 #include "src/objects/backing-store.h"
 
 #include <cstring>
+#include <optional>
 
 #include "src/base/bits.h"
 #include "src/execution/isolate.h"
@@ -26,8 +27,7 @@
     if (v8_flags.trace_backing_store) PrintF(__VA_ARGS__); \
   } while (false)
 
-namespace v8 {
-namespace internal {
+namespace v8::internal {
 
 namespace {
 
@@ -396,7 +396,6 @@ std::unique_ptr<BackingStore> BackingStore::TryAllocateAndPartiallyCommitMemory(
                                  guards,            // has_guard_regions
                                  false,             // custom_deleter
                                  false);            // empty_deleter
-
   TRACE_BS(
       "BSw:alloc bs=%p mem=%p (length=%zu, capacity=%zu, reservation=%zu)\n",
       result, result->buffer_start(), byte_length, byte_capacity,
@@ -471,9 +470,9 @@ std::unique_ptr<BackingStore> BackingStore::CopyWasmMemory(
 }
 
 // Try to grow the size of a wasm memory in place, without realloc + copy.
-base::Optional<size_t> BackingStore::GrowWasmMemoryInPlace(Isolate* isolate,
-                                                           size_t delta_pages,
-                                                           size_t max_pages) {
+std::optional<size_t> BackingStore::GrowWasmMemoryInPlace(Isolate* isolate,
+                                                          size_t delta_pages,
+                                                          size_t max_pages) {
   // This function grows wasm memory by
   // * changing the permissions of additional {delta_pages} pages to kReadWrite;
   // * increment {byte_length_};
@@ -536,11 +535,6 @@ base::Optional<size_t> BackingStore::GrowWasmMemoryInPlace(Isolate* isolate,
     }
   }
 
-  if (!is_shared_) {
-    // Only do per-isolate accounting for non-shared backing stores.
-    reinterpret_cast<v8::Isolate*>(isolate)
-        ->AdjustAmountOfExternalAllocatedMemory(new_length - old_length);
-  }
   return {old_length / wasm::kWasmPageSize};
 }
 
@@ -627,9 +621,6 @@ BackingStore::ResizeOrGrowResult BackingStore::ResizeInPlace(
     return kFailure;
   }
 
-  // Do per-isolate accounting for non-shared backing stores.
-  reinterpret_cast<v8::Isolate*>(isolate)
-      ->AdjustAmountOfExternalAllocatedMemory(new_byte_length - byte_length_);
   byte_length_ = new_byte_length;
   return kSuccess;
 }
@@ -911,7 +902,6 @@ void GlobalBackingStoreRegistry::UpdateSharedWasmMemoryObjects(
 }
 #endif  // V8_ENABLE_WEBASSEMBLY
 
-}  // namespace internal
-}  // namespace v8
+}  // namespace v8::internal
 
 #undef TRACE_BS

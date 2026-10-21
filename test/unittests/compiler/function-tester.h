@@ -5,8 +5,8 @@
 #ifndef V8_UNITTESTS_COMPILER_FUNCTION_TESTER_H_
 #define V8_UNITTESTS_COMPILER_FUNCTION_TESTER_H_
 
-#include "src/compiler/graph.h"
 #include "src/compiler/js-heap-broker.h"
+#include "src/compiler/turbofan-graph.h"
 #include "src/execution/execution.h"
 #include "src/handles/handles.h"
 #include "test/unittests/test-utils.h"
@@ -67,11 +67,13 @@ class FunctionTester {
     return CheckCall(expected, a, b, undefined());
   }
 
-  void CheckCall(Handle<Object> expected, Handle<Object> a) {
+  void CheckCall(DirectHandle<Object> expected, Handle<Object> a) {
     CheckCall(expected, a, undefined());
   }
 
-  void CheckCall(Handle<Object> expected) { CheckCall(expected, undefined()); }
+  void CheckCall(DirectHandle<Object> expected) {
+    CheckCall(expected, undefined());
+  }
 
   void CheckCall(double expected, double a, double b) {
     CheckCall(NewNumber(expected), NewNumber(a), NewNumber(b));

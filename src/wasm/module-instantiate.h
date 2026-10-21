@@ -11,7 +11,8 @@
 
 #include <stdint.h>
 
-#include "src/base/optional.h"
+#include <optional>
+
 #include "src/common/message-template.h"
 #include "src/objects/code-kind.h"
 #include "src/wasm/wasm-value.h"
@@ -30,8 +31,8 @@ class Zone;
 
 namespace wasm {
 class ErrorThrower;
-enum Suspend : int { kSuspend, kSuspendWithSuspender, kNoSuspend };
-enum Promise : int { kPromise, kPromiseWithSuspender, kNoPromise };
+enum Suspend : int { kSuspend, kNoSuspend };
+enum Promise : int { kPromise, kNoPromise };
 struct WasmModule;
 
 // Calls to Wasm imports are handled in several different ways, depending on the
@@ -85,12 +86,13 @@ constexpr ImportCallKind kDefaultImportCallKind =
 // suspender object if applicable. Note that some callables (e.g. a
 // {WasmExportedFunction} or {WasmJSFunction}) just wrap another target, which
 // is why the ultimate target is provided as well.
-class WasmImportData {
+class ResolvedWasmImport {
  public:
-  V8_EXPORT_PRIVATE WasmImportData(
+  V8_EXPORT_PRIVATE ResolvedWasmImport(
       DirectHandle<WasmTrustedInstanceData> trusted_instance_data,
-      int func_index, Handle<JSReceiver> callable, const wasm::FunctionSig* sig,
-      uint32_t expected_canonical_type_index, WellKnownImport preknown_import);
+      int func_index, Handle<JSReceiver> callable,
+      const wasm::CanonicalSig* sig, uint32_t expected_canonical_type_index,
+      WellKnownImport preknown_import);
 
   ImportCallKind kind() const { return kind_; }
   WellKnownImport well_known_status() const { return well_known_status_; }
@@ -109,7 +111,7 @@ class WasmImportData {
 
   ImportCallKind ComputeKind(
       DirectHandle<WasmTrustedInstanceData> trusted_instance_data,
-      int func_index, const wasm::FunctionSig* expected_sig,
+      int func_index, const wasm::CanonicalSig* expected_sig,
       uint32_t expected_canonical_type_index, WellKnownImport preknown_import);
 
   ImportCallKind kind_;
@@ -128,7 +130,7 @@ MaybeHandle<WasmInstanceObject> InstantiateToInstanceObject(
 // {instance}. If successful, returns the empty {Optional}, otherwise an
 // {Optional} that contains the error message. Exits early if the segment is
 // already initialized.
-base::Optional<MessageTemplate> InitializeElementSegment(
+std::optional<MessageTemplate> InitializeElementSegment(
     Zone* zone, Isolate* isolate,
     Handle<WasmTrustedInstanceData> trusted_instance_data,
     Handle<WasmTrustedInstanceData> shared_trusted_instance_data,

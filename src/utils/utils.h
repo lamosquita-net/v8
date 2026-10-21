@@ -27,6 +27,8 @@
 
 #if defined(V8_OS_AIX)
 #include <fenv.h>  // NOLINT(build/c++11)
+
+#include "src/wasm/float16.h"
 #endif
 
 #ifdef _MSC_VER
@@ -39,7 +41,7 @@
 #endif
 
 #ifdef __SSE3__
-#include <immintrin.h>
+#include <pmmintrin.h>
 #endif
 
 #if defined(V8_TARGET_ARCH_ARM64) && \
@@ -814,6 +816,13 @@ T FpOpWorkaround(T input, T value) {
   }
   return value;
 }
+
+template <>
+inline Float16 FpOpWorkaround(Float16 input, Float16 value) {
+  float result = FpOpWorkaround(input.ToFloat32(), value.ToFloat32());
+  return Float16::FromFloat32(result);
+}
+
 #endif
 
 V8_EXPORT_PRIVATE bool PassesFilter(base::Vector<const char> name,

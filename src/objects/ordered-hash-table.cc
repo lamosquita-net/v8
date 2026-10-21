@@ -109,7 +109,7 @@ Handle<Derived> OrderedHashTable<Derived, entrysize>::Clear(
     Isolate* isolate, Handle<Derived> table) {
   DCHECK(!table->IsObsolete());
 
-  AllocationType allocation_type = Heap::InYoungGeneration(*table)
+  AllocationType allocation_type = HeapLayout::InYoungGeneration(*table)
                                        ? AllocationType::kYoung
                                        : AllocationType::kOld;
 
@@ -222,7 +222,7 @@ Handle<FixedArray> OrderedHashSet::ConvertToKeysArray(
   // Convert the dictionary to a linear list.
   Handle<FixedArray> result = Cast<FixedArray>(table);
   // From this point on table is no longer a valid OrderedHashSet.
-  result->set_map(ReadOnlyRoots(isolate).fixed_array_map());
+  result->set_map(isolate, ReadOnlyRoots(isolate).fixed_array_map());
   int const kMaxStringTableEntries =
       isolate->heap()->MaxNumberToStringCacheSize();
   for (int i = 0; i < length; i++) {
@@ -265,10 +265,10 @@ MaybeHandle<Derived> OrderedHashTable<Derived, entrysize>::Rehash(
     Isolate* isolate, Handle<Derived> table, int new_capacity) {
   DCHECK(!table->IsObsolete());
 
-  MaybeHandle<Derived> new_table_candidate =
-      Derived::Allocate(isolate, new_capacity,
-                        Heap::InYoungGeneration(*table) ? AllocationType::kYoung
-                                                        : AllocationType::kOld);
+  MaybeHandle<Derived> new_table_candidate = Derived::Allocate(
+      isolate, new_capacity,
+      HeapLayout::InYoungGeneration(*table) ? AllocationType::kYoung
+                                            : AllocationType::kOld);
   Handle<Derived> new_table;
   if (!new_table_candidate.ToHandle(&new_table)) {
     return new_table_candidate;
@@ -706,7 +706,8 @@ void SmallOrderedHashTable<Derived>::Initialize(Isolate* isolate,
 }
 
 MaybeHandle<SmallOrderedHashSet> SmallOrderedHashSet::Add(
-    Isolate* isolate, Handle<SmallOrderedHashSet> table, Handle<Object> key) {
+    Isolate* isolate, Handle<SmallOrderedHashSet> table,
+    DirectHandle<Object> key) {
   if (table->HasKey(isolate, key)) return table;
 
   if (table->UsedCapacity() >= table->Capacity()) {
@@ -751,8 +752,8 @@ bool SmallOrderedHashSet::HasKey(Isolate* isolate, DirectHandle<Object> key) {
 }
 
 MaybeHandle<SmallOrderedHashMap> SmallOrderedHashMap::Add(
-    Isolate* isolate, Handle<SmallOrderedHashMap> table, Handle<Object> key,
-    DirectHandle<Object> value) {
+    Isolate* isolate, Handle<SmallOrderedHashMap> table,
+    DirectHandle<Object> key, DirectHandle<Object> value) {
   if (table->HasKey(isolate, key)) return table;
 
   if (table->UsedCapacity() >= table->Capacity()) {
@@ -930,8 +931,8 @@ Handle<Derived> SmallOrderedHashTable<Derived>::Rehash(Isolate* isolate,
 
   Handle<Derived> new_table = SmallOrderedHashTable<Derived>::Allocate(
       isolate, new_capacity,
-      Heap::InYoungGeneration(*table) ? AllocationType::kYoung
-                                      : AllocationType::kOld);
+      HeapLayout::InYoungGeneration(*table) ? AllocationType::kYoung
+                                            : AllocationType::kOld);
   int new_entry = 0;
 
   {
@@ -1227,7 +1228,7 @@ OrderedNameDictionaryHandler::AdjustRepresentation(
 
 MaybeHandle<HeapObject> OrderedHashMapHandler::Add(Isolate* isolate,
                                                    Handle<HeapObject> table,
-                                                   Handle<Object> key,
+                                                   DirectHandle<Object> key,
                                                    DirectHandle<Object> value) {
   if (IsSmallOrderedHashMap(*table)) {
     Handle<SmallOrderedHashMap> small_map = Cast<SmallOrderedHashMap>(table);
@@ -1250,7 +1251,7 @@ MaybeHandle<HeapObject> OrderedHashMapHandler::Add(Isolate* isolate,
 
 MaybeHandle<HeapObject> OrderedHashSetHandler::Add(Isolate* isolate,
                                                    Handle<HeapObject> table,
-                                                   Handle<Object> key) {
+                                                   DirectHandle<Object> key) {
   if (IsSmallOrderedHashSet(*table)) {
     Handle<SmallOrderedHashSet> small_set = Cast<SmallOrderedHashSet>(table);
     MaybeHandle<SmallOrderedHashSet> new_set =

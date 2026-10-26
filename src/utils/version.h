@@ -42,7 +42,7 @@ class V8_EXPORT Version {
   // with v8 3349cb9fd (microtask completed callbacks), 12 = seg/v8-12.8,
   // 13 = seg/v8-12.9 (FlyWeb 1.13), 14 = reserved (never shipped),
   // 15 = seg/v8-13.0 (FlyWeb 1.14), 16 = seg/v8-13.1 (FlyWeb 1.15).
-  static constexpr int kFlyWebCacheEpoch = 16;
+  static constexpr int kFlyWebCacheEpoch = 17;
   static uint32_t Hash() {
     return static_cast<uint32_t>(base::hash_combine(
         major_, minor_, build_, patch_, kFlyWebCacheEpoch));

@@ -417,6 +417,11 @@ class MemoryContentTable
     }
   }
 
+  // FlyWeb: v8 0652ef4b (crbug 436623746).
+  void InvalidateAtMapOffset() {
+    InvalidateAtOffset(HeapObject::kMapOffset, OptionalOpIndex::Nullopt());
+  }
+
   OpIndex Find(const LoadOp& load) {
     OpIndex base = ResolveBase(load.base());
     OptionalOpIndex index = load.index();
@@ -525,11 +530,6 @@ class MemoryContentTable
     all_keys_.insert({mem, key});
     // Call `SetNoNotify` to avoid calls to `OnNewKey` and `OnValueChanged`.
     SetNoNotify(key, value);
-  }
-
-  // FlyWeb: v8 0652ef4b (crbug 436623746).
-  void InvalidateAtMapOffset() {
-    InvalidateAtOffset(HeapObject::kMapOffset, OptionalOpIndex::Nullopt());
   }
 
   void InvalidateAtOffset(int32_t offset, OptionalOpIndex base) {

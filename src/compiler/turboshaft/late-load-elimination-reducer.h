@@ -527,8 +527,14 @@ class MemoryContentTable
     SetNoNotify(key, value);
   }
 
-  void InvalidateAtOffset(int32_t offset, OpIndex base) {
-    MapMaskAndOr base_maps = object_maps_.Get(base);
+  // FlyWeb: v8 0652ef4b (crbug 436623746).
+  void InvalidateAtMapOffset() {
+    InvalidateAtOffset(HeapObject::kMapOffset, OptionalOpIndex::Nullopt());
+  }
+
+  void InvalidateAtOffset(int32_t offset, OptionalOpIndex base) {
+    MapMaskAndOr base_maps{};
+    if (base.has_value()) base_maps = object_maps_.Get(base.value());
     auto offset_keys = offset_keys_.find(offset);
     if (offset_keys == offset_keys_.end()) return;
     for (auto it = offset_keys->second.begin();
@@ -541,7 +547,8 @@ class MemoryContentTable
         ++it;
         continue;
       }
-      MapMaskAndOr this_maps = key.data().mem.base == base
+      MapMaskAndOr this_maps = base.has_value() &&
+                                       key.data().mem.base == base.value()
                                    ? base_maps
                                    : object_maps_.Get(key.data().mem.base);
       if (!is_empty(base_maps) && !is_empty(this_maps) &&
@@ -694,6 +701,8 @@ class V8_EXPORT_PRIVATE LateLoadEliminationAnalyzer {
 
   void InvalidateAllNonAliasingInputs(const Operation& op);
   void InvalidateIfAlias(OpIndex op_idx);
+  void InvalidateAllMaps();
+  void WipeAllMaps();
 
   PipelineData* data_;
   Graph& graph_;

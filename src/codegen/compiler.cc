@@ -3309,6 +3309,7 @@ MaybeHandle<JSFunction> Compiler::GetFunctionFromEval(
     }
   }
   CHECK(is_compiled_scope.is_compiled());
+  BRAVE_COMPILER_GET_FUNCTION_FROM_EVAL
 
   return result;
 }

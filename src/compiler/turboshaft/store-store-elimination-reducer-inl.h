@@ -203,6 +203,16 @@ class MaybeRedundantStoresTable
     }
   }
 
+  // FlyWeb: v8 67c8f3a9 (crbug 547936520).
+  void InvalidateBasesInRange(BlockIndex start, BlockIndex end) {
+    for (Key key : active_keys_) {
+      BlockIndex base_block = graph_.BlockOf(key.data().base);
+      if (base_block >= start && base_block <= end) {
+        Set(key, StoreObservability::kObservable);
+      }
+    }
+  }
+
   void MarkAllStoresAsGCObservable() {
     for (Key key : active_keys_) {
       auto current = Get(key);
@@ -296,12 +306,18 @@ class RedundantStoreAnalysis {
       // If this block is a loop header, check if this loop needs to be
       // revisited.
       if (block.IsLoop()) {
+        Block* back_edge = block.LastPredecessor();
+        DCHECK_GE(back_edge->index(), block_index);
+        // FlyWeb: v8 67c8f3a9 (crbug 547936520). Objects allocated inside the
+        // loop body are distinct across iterations: invalidate their store
+        // observability across the backedge (the block range is a
+        // conservative overapproximation of the loop).
+        table_.InvalidateBasesInRange(block_index, back_edge->index());
+
         DCHECK(!table_.IsSealed());
         bool needs_revisit = false;
         table_.Seal(&needs_revisit);
         if (needs_revisit) {
-          Block* back_edge = block.LastPredecessor();
-          DCHECK_GE(back_edge->index(), block_index);
           processed = back_edge->index().id() + 1;
         }
       }
@@ -330,6 +346,10 @@ class RedundantStoreAnalysis {
           // For now we consider only stores of fixed offsets of objects on the
           // heap.
           if (is_on_heap_store && is_fixed_offset_store) {
+            // FlyWeb: v8 67c8f3a9. When revisiting a loop, a previous visit
+            // may have marked this store eliminable; drop that decision and
+            // re-add it below only if it still holds.
+            eliminable_stores_->erase(index);
             bool is_eliminable_store = false;
             switch (table_.GetObservability(store.base(), store.offset, size)) {
               case StoreObservability::kUnobservable:

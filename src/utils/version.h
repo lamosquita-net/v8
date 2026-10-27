@@ -41,8 +41,10 @@ class V8_EXPORT Version {
   // 1.11.2 (V8 12.8 with SEGURIDAD's backports, seg/v8-12.8), 11 = the same
   // with v8 3349cb9fd (microtask completed callbacks), 12 = seg/v8-12.8,
   // 13 = seg/v8-12.9 (FlyWeb 1.13), 14 = reserved (never shipped),
-  // 15 = seg/v8-13.0 (FlyWeb 1.14), 16 = seg/v8-13.1 (FlyWeb 1.15).
-  static constexpr int kFlyWebCacheEpoch = 17;
+  // 15 = seg/v8-13.0 (FlyWeb 1.14), 16 = seg/v8-13.1 (FlyWeb 1.15),
+  // 17 = FlyWeb 2.0.1 (CVE-2026-11645), 18 = seg/v8-13.1-lle (FlyWeb 2.0.3),
+  // 19 = seg/v8-13.2 (engine level 132).
+  static constexpr int kFlyWebCacheEpoch = 19;
   static uint32_t Hash() {
     return static_cast<uint32_t>(base::hash_combine(
         major_, minor_, build_, patch_, kFlyWebCacheEpoch));

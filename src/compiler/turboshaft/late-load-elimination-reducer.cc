@@ -412,6 +412,11 @@ void LateLoadEliminationAnalyzer::ProcessCall(OpIndex op_idx,
   // Some builtins do not create aliases and do not invalidate existing
   // memory, and some even return fresh objects. For such cases, we don't
   // invalidate the state, and record the non-alias if any.
+  // FlyWeb: v8 cabe17f3 (crbug 554421904). "can_write" means "can write to
+  // already allocated memory": a builtin that allocates a fresh object copying
+  // its inputs still creates aliases to them, so invalidate the non-aliasing
+  // inputs before the can_write bailout.
+  InvalidateAllNonAliasingInputs(op);
   if (!op.Effects().can_write()) return;
   // Note: This does not detect wasm stack checks, but those are detected by the
   // check just above.
@@ -442,6 +447,14 @@ void LateLoadEliminationAnalyzer::ProcessCall(OpIndex op_idx,
   // The call could modify arbitrary memory, so we invalidate every
   // potentially-aliasing object.
   memory_.InvalidateMaybeAliasing();
+
+  // This call could transition objects, thus invalidating their maps.
+  // TODO(dmercadier): we should only wipe unstable maps here, except that we
+  // don't know which maps are stable or not because we compact maps in
+  // MapMaskAndOr. I'm really not sure how much benefits this MapMaskAndOr
+  // structure brings, so we could instead consider to record exact maps, in
+  // which case we'd be able to only invalidate unstable ones.
+  WipeAllMaps();
 }
 
 // The only time an Allocate should flow into a WordBinop is for Smi checks
@@ -496,9 +509,26 @@ void LateLoadEliminationAnalyzer::InvalidateIfAlias(OpIndex op_idx) {
   }
 }
 
+// FlyWeb: as upstream (used by v8 153cde95; 13.2 does not have it).
+void LateLoadEliminationAnalyzer::WipeAllMaps() {
+  for (auto it : object_maps_) {
+    object_maps_.Set(it.second, MapMaskAndOr{});
+  }
+}
+
+// FlyWeb: v8 0652ef4b (crbug 436623746).
+void LateLoadEliminationAnalyzer::InvalidateAllMaps() {
+  memory_.InvalidateAtMapOffset();
+  WipeAllMaps();
+}
+
 void LateLoadEliminationAnalyzer::ProcessAllocate(OpIndex op_idx,
                                                   const AllocateOp&) {
   non_aliasing_objects_.Set(op_idx, true);
+
+  // Allocate can trigger a GC, which can shortcut references to strings after
+  // flattening. That will change the map we see on repeated loads.
+  InvalidateAllMaps();
 }
 
 void LateLoadEliminationAnalyzer::ProcessAssumeMap(
@@ -614,13 +644,7 @@ bool LateLoadEliminationAnalyzer::BeginBlock(const Block* block) {
       // edge of the inner loop should reflect this restriction.
       predecessor_alias_snapshots_.push_back(pred_snapshots->alias_snapshot);
       predecessor_memory_snapshots_.push_back(pred_snapshots->memory_snapshot);
-      if (p->NeighboringPredecessor() != nullptr || !block->IsLoop() ||
-          block->LastPredecessor() != p) {
-        // We only add a MapSnapshot predecessor for non-backedge predecessor.
-        // This is because maps coming from inside of the loop may be wrong
-        // until a specific check has been executed.
-        predecessor_maps_snapshots_.push_back(pred_snapshots->maps_snapshot);
-      }
+      predecessor_maps_snapshots_.push_back(pred_snapshots->maps_snapshot);
     }
   }
 
@@ -653,9 +677,13 @@ bool LateLoadEliminationAnalyzer::BeginBlock(const Block* block) {
       if (is_empty(pred)) {
         // One of the predecessors doesn't have maps for this object, so we have
         // to assume that this object could have any map.
-        return MapMaskAndOr{};
+        minmax = MapMaskAndOr{};
+        break;
       }
       minmax = CombineMinMax(minmax, pred);
+    }
+    if (for_loop_revisit && minmax != predecessors[kForwardEdgeOffset]) {
+      loop_needs_revisit = true;
     }
     return minmax;
   };

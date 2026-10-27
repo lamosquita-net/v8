@@ -2252,6 +2252,7 @@ class MaglevGraphBuilder {
   void BuildGetKeyedProperty(
       ValueNode* object, const compiler::FeedbackSource& feedback_source,
       const compiler::ProcessedFeedback& processed_feedback);
+  void VisitDefineNamedOwnPropertyHelper(bool in_literal);
 
   ValueNode* BuildLoadFixedArrayLength(ValueNode* fixed_array);
   ValueNode* BuildLoadJSArrayLength(ValueNode* js_array,

@@ -390,9 +390,8 @@ void IC::ConfigureVectorState(
   OnFeedbackChanged("Polymorphic");
 }
 
-MaybeHandle<Object> LoadIC::Load(Handle<Object> object, Handle<Name> name,
-                                 bool update_feedback,
-                                 Handle<Object> receiver) {
+MaybeHandle<Object> LoadIC::Load(Handle<JSAny> object, Handle<Name> name,
+                                 bool update_feedback, Handle<JSAny> receiver) {
   bool use_ic = (state() != NO_FEEDBACK) && v8_flags.use_ic && update_feedback;
 
   if (receiver.is_null()) {
@@ -517,6 +516,12 @@ MaybeHandle<Object> LoadGlobalIC::Load(Handle<Name> name,
         TraceIC("LoadGlobalIC", name);
       } else if (state() == NO_FEEDBACK) {
         TraceIC("LoadGlobalIC", name);
+      }
+      if (v8_flags.script_context_mutable_heap_number) {
+        return handle(
+            *Context::LoadScriptContextElement(
+                script_context, lookup_result.slot_index, result, isolate()),
+            isolate());
       }
       return result;
     }
@@ -1265,13 +1270,14 @@ bool AllowConvertHoleElementToUndefined(Isolate* isolate,
       // the {receiver}s prototype is either the initial Object.prototype
       // or the initial Array.prototype, which are both guarded by the
       // "no elements" protector checked above.
-      DirectHandle<Object> receiver_prototype(receiver_map->prototype(),
-                                              isolate);
-
-      if (isolate->IsInAnyContext(*receiver_prototype,
-                                  Context::INITIAL_ARRAY_PROTOTYPE_INDEX) ||
-          isolate->IsInAnyContext(*receiver_prototype,
-                                  Context::INITIAL_OBJECT_PROTOTYPE_INDEX)) {
+      DirectHandle<HeapObject> receiver_prototype(receiver_map->prototype(),
+                                                  isolate);
+      InstanceType prototype_type = receiver_prototype->map()->instance_type();
+      if (prototype_type == JS_OBJECT_PROTOTYPE_TYPE ||
+          (prototype_type == JS_ARRAY_TYPE &&
+           isolate->IsInCreationContext(
+               Cast<JSObject>(*receiver_prototype),
+               Context::INITIAL_ARRAY_PROTOTYPE_INDEX))) {
         return true;
       }
     }
@@ -1531,7 +1537,7 @@ bool CanCache(DirectHandle<Object> receiver, InlineCacheState state) {
 
 }  // namespace
 
-MaybeHandle<Object> KeyedLoadIC::RuntimeLoad(Handle<Object> object,
+MaybeHandle<Object> KeyedLoadIC::RuntimeLoad(Handle<JSAny> object,
                                              Handle<Object> key,
                                              bool* is_found) {
   Handle<Object> result;
@@ -1539,7 +1545,7 @@ MaybeHandle<Object> KeyedLoadIC::RuntimeLoad(Handle<Object> object,
   if (IsKeyedLoadIC()) {
     ASSIGN_RETURN_ON_EXCEPTION(
         isolate(), result,
-        Runtime::GetObjectProperty(isolate(), object, key, Handle<Object>(),
+        Runtime::GetObjectProperty(isolate(), object, key, Handle<JSAny>(),
                                    is_found));
   } else {
     DCHECK(IsKeyedHasIC());
@@ -1549,7 +1555,7 @@ MaybeHandle<Object> KeyedLoadIC::RuntimeLoad(Handle<Object> object,
   return result;
 }
 
-MaybeHandle<Object> KeyedLoadIC::LoadName(Handle<Object> object,
+MaybeHandle<Object> KeyedLoadIC::LoadName(Handle<JSAny> object,
                                           DirectHandle<Object> key,
                                           Handle<Name> name) {
   Handle<Object> load_handle;
@@ -1565,7 +1571,7 @@ MaybeHandle<Object> KeyedLoadIC::LoadName(Handle<Object> object,
   return load_handle;
 }
 
-MaybeHandle<Object> KeyedLoadIC::Load(Handle<Object> object,
+MaybeHandle<Object> KeyedLoadIC::Load(Handle<JSAny> object,
                                       Handle<Object> key) {
   if (MigrateDeprecated(isolate(), object)) {
     return RuntimeLoad(object, key);
@@ -1732,13 +1738,6 @@ MaybeHandle<Object> StoreGlobalIC::Store(Handle<Name> name,
                             name));
     }
 
-    if (lookup_result.mode == VariableMode::kLet &&
-        v8_flags.const_tracking_let) {
-      Context::UpdateConstTrackingLetSideData(handle(script_context, isolate()),
-                                              lookup_result.slot_index, value,
-                                              isolate());
-    }
-
     bool use_ic = (state() != NO_FEEDBACK) && v8_flags.use_ic;
     if (use_ic) {
       if (nexus()->ConfigureLexicalVarMode(
@@ -1754,7 +1753,14 @@ MaybeHandle<Object> StoreGlobalIC::Store(Handle<Name> name,
     } else if (state() == NO_FEEDBACK) {
       TraceIC("StoreGlobalIC", name);
     }
-    script_context->set(lookup_result.slot_index, *value);
+    if (v8_flags.script_context_mutable_heap_number ||
+        v8_flags.const_tracking_let) {
+      Context::StoreScriptContextAndUpdateSlotProperty(
+          handle(script_context, isolate()), lookup_result.slot_index, value,
+          isolate());
+    } else {
+      script_context->set(lookup_result.slot_index, *value);
+    }
     return value;
   }
 
@@ -1829,7 +1835,7 @@ Maybe<bool> DefineOwnDataProperty(LookupIterator* it,
 }
 }  // namespace
 
-MaybeHandle<Object> StoreIC::Store(Handle<Object> object, Handle<Name> name,
+MaybeHandle<Object> StoreIC::Store(Handle<JSAny> object, Handle<Name> name,
                                    Handle<Object> value,
                                    StoreOrigin store_origin) {
   // TODO(verwaest): Let SetProperty do the migration, since storing a property
@@ -2553,7 +2559,7 @@ KeyedAccessStoreMode GetStoreMode(DirectHandle<JSObject> receiver,
 
 }  // namespace
 
-MaybeHandle<Object> KeyedStoreIC::Store(Handle<Object> object,
+MaybeHandle<Object> KeyedStoreIC::Store(Handle<JSAny> object,
                                         Handle<Object> key,
                                         Handle<Object> value) {
   // TODO(verwaest): Let SetProperty do the migration, since storing a property
@@ -2566,7 +2572,7 @@ MaybeHandle<Object> KeyedStoreIC::Store(Handle<Object> object,
         isolate(), result,
         IsDefineKeyedOwnIC()
             ? Runtime::DefineObjectOwnProperty(isolate(), object, key, value,
-                                               StoreOrigin::kMaybeKeyed)
+                                               StoreOrigin::kNamed)
             : Runtime::SetObjectProperty(isolate(), object, key, value,
                                          StoreOrigin::kMaybeKeyed));
     return result;
@@ -2637,7 +2643,7 @@ MaybeHandle<Object> KeyedStoreIC::Store(Handle<Object> object,
   MaybeHandle<Object> result =
       IsDefineKeyedOwnIC()
           ? Runtime::DefineObjectOwnProperty(isolate(), object, key, value,
-                                             StoreOrigin::kMaybeKeyed)
+                                             StoreOrigin::kNamed)
           : Runtime::SetObjectProperty(isolate(), object, key, value,
                                        StoreOrigin::kMaybeKeyed);
   if (result.is_null()) {
@@ -2755,7 +2761,7 @@ RUNTIME_FUNCTION(Runtime_LoadIC_Miss) {
   HandleScope scope(isolate);
   DCHECK_EQ(4, args.length());
   // Runtime functions don't follow the IC's calling convention.
-  Handle<Object> receiver = args.at(0);
+  Handle<JSAny> receiver = args.at<JSAny>(0);
   Handle<Name> key = args.at<Name>(1);
   int slot = args.tagged_index_value_at(2);
   Handle<FeedbackVector> vector = args.at<FeedbackVector>(3);
@@ -2789,7 +2795,7 @@ RUNTIME_FUNCTION(Runtime_LoadNoFeedbackIC_Miss) {
   HandleScope scope(isolate);
   DCHECK_EQ(3, args.length());
   // Runtime functions don't follow the IC's calling convention.
-  Handle<Object> receiver = args.at(0);
+  Handle<JSAny> receiver = args.at<JSAny>(0);
   Handle<Name> key = args.at<Name>(1);
   int slot_kind = args.smi_value_at(2);
   FeedbackSlotKind kind = static_cast<FeedbackSlotKind>(slot_kind);
@@ -2807,8 +2813,8 @@ RUNTIME_FUNCTION(Runtime_LoadWithReceiverNoFeedbackIC_Miss) {
   HandleScope scope(isolate);
   DCHECK_EQ(3, args.length());
   // Runtime functions don't follow the IC's calling convention.
-  Handle<Object> receiver = args.at(0);
-  Handle<Object> object = args.at(1);
+  Handle<JSAny> receiver = args.at<JSAny>(0);
+  Handle<JSAny> object = args.at<JSAny>(1);
   Handle<Name> key = args.at<Name>(2);
 
   Handle<FeedbackVector> vector = Handle<FeedbackVector>();
@@ -2867,8 +2873,8 @@ RUNTIME_FUNCTION(Runtime_LoadWithReceiverIC_Miss) {
   HandleScope scope(isolate);
   DCHECK_EQ(5, args.length());
   // Runtime functions don't follow the IC's calling convention.
-  Handle<Object> receiver = args.at(0);
-  Handle<Object> object = args.at(1);
+  Handle<JSAny> receiver = args.at<JSAny>(0);
+  Handle<JSAny> object = args.at<JSAny>(1);
   Handle<Name> key = args.at<Name>(2);
   int slot = args.tagged_index_value_at(3);
   Handle<FeedbackVector> vector = args.at<FeedbackVector>(4);
@@ -2884,7 +2890,7 @@ RUNTIME_FUNCTION(Runtime_KeyedLoadIC_Miss) {
   HandleScope scope(isolate);
   DCHECK_EQ(4, args.length());
   // Runtime functions don't follow the IC's calling convention.
-  Handle<Object> receiver = args.at(0);
+  Handle<JSAny> receiver = args.at<JSAny>(0);
   Handle<Object> key = args.at(1);
   int slot = args.tagged_index_value_at(2);
   Handle<HeapObject> maybe_vector = args.at<HeapObject>(3);
@@ -2907,7 +2913,7 @@ RUNTIME_FUNCTION(Runtime_StoreIC_Miss) {
   Handle<Object> value = args.at(0);
   int slot = args.tagged_index_value_at(1);
   Handle<HeapObject> maybe_vector = args.at<HeapObject>(2);
-  Handle<Object> receiver = args.at(3);
+  Handle<JSAny> receiver = args.at<JSAny>(3);
   Handle<Name> key = args.at<Name>(4);
 
   FeedbackSlot vector_slot = FeedbackVector::ToSlot(slot);
@@ -2938,7 +2944,7 @@ RUNTIME_FUNCTION(Runtime_DefineNamedOwnIC_Miss) {
   Handle<Object> value = args.at(0);
   int slot = args.tagged_index_value_at(1);
   Handle<HeapObject> maybe_vector = args.at<HeapObject>(2);
-  Handle<Object> receiver = args.at(3);
+  Handle<JSAny> receiver = args.at<JSAny>(3);
   Handle<Name> key = args.at<Name>(4);
 
   FeedbackSlot vector_slot = FeedbackVector::ToSlot(slot);
@@ -2968,7 +2974,7 @@ RUNTIME_FUNCTION(Runtime_DefineNamedOwnIC_Slow) {
   DCHECK_EQ(3, args.length());
 
   Handle<Object> value = args.at(0);
-  Handle<Object> object = args.at(1);
+  Handle<JSAny> object = args.at<JSAny>(1);
   Handle<Object> key = args.at(2);
 
   // Unlike DefineKeyedOwnIC, DefineNamedOwnIC doesn't handle private
@@ -3029,7 +3035,7 @@ RUNTIME_FUNCTION(Runtime_StoreGlobalIC_Slow) {
     FeedbackSlot vector_slot = FeedbackVector::ToSlot(slot);
     FeedbackSlotKind slot_kind = vector->GetKind(vector_slot);
     DCHECK(IsStoreGlobalICKind(slot_kind));
-    DirectHandle<Object> receiver = args.at(3);
+    DirectHandle<JSAny> receiver = args.at<JSAny>(3);
     DCHECK(IsJSGlobalProxy(*receiver));
   }
 #endif
@@ -3062,10 +3068,11 @@ RUNTIME_FUNCTION(Runtime_StoreGlobalIC_Slow) {
       }
     }
     if (v8_flags.const_tracking_let) {
-      Context::UpdateConstTrackingLetSideData(
+      Context::StoreScriptContextAndUpdateSlotProperty(
           script_context, lookup_result.slot_index, value, isolate);
+    } else {
+      script_context->set(lookup_result.slot_index, *value);
     }
-    script_context->set(lookup_result.slot_index, *value);
     return *value;
   }
 
@@ -3080,7 +3087,7 @@ RUNTIME_FUNCTION(Runtime_KeyedStoreIC_Miss) {
   // Runtime functions don't follow the IC's calling convention.
   Handle<Object> value = args.at(0);
   Handle<HeapObject> maybe_vector = args.at<HeapObject>(2);
-  Handle<Object> receiver = args.at(3);
+  Handle<JSAny> receiver = args.at<JSAny>(3);
   Handle<Object> key = args.at(4);
   FeedbackSlot vector_slot;
 
@@ -3126,7 +3133,7 @@ RUNTIME_FUNCTION(Runtime_DefineKeyedOwnIC_Miss) {
   Handle<Object> value = args.at(0);
   int slot = args.tagged_index_value_at(1);
   Handle<HeapObject> maybe_vector = args.at<HeapObject>(2);
-  Handle<Object> receiver = args.at(3);
+  Handle<JSAny> receiver = args.at<JSAny>(3);
   Handle<Object> key = args.at(4);
   FeedbackSlot vector_slot = FeedbackVector::ToSlot(slot);
 
@@ -3153,7 +3160,7 @@ RUNTIME_FUNCTION(Runtime_StoreInArrayLiteralIC_Miss) {
   Handle<Object> value = args.at(0);
   int slot = args.tagged_index_value_at(1);
   Handle<HeapObject> maybe_vector = args.at<HeapObject>(2);
-  Handle<Object> receiver = args.at(3);
+  Handle<JSAny> receiver = args.at<JSAny>(3);
   Handle<Object> key = args.at(4);
   Handle<FeedbackVector> vector = Handle<FeedbackVector>();
   if (!IsUndefined(*maybe_vector, isolate)) {
@@ -3173,7 +3180,7 @@ RUNTIME_FUNCTION(Runtime_KeyedStoreIC_Slow) {
   DCHECK_EQ(3, args.length());
   // Runtime functions don't follow the IC's calling convention.
   Handle<Object> value = args.at(0);
-  Handle<Object> object = args.at(1);
+  Handle<JSAny> object = args.at<JSAny>(1);
   Handle<Object> key = args.at(2);
   RETURN_RESULT_OR_FAILURE(
       isolate, Runtime::SetObjectProperty(isolate, object, key, value,
@@ -3185,11 +3192,11 @@ RUNTIME_FUNCTION(Runtime_DefineKeyedOwnIC_Slow) {
   DCHECK_EQ(3, args.length());
   // Runtime functions don't follow the IC's calling convention.
   Handle<Object> value = args.at(0);
-  Handle<Object> object = args.at(1);
+  Handle<JSAny> object = args.at<JSAny>(1);
   Handle<Object> key = args.at(2);
   RETURN_RESULT_OR_FAILURE(
       isolate, Runtime::DefineObjectOwnProperty(isolate, object, key, value,
-                                                StoreOrigin::kMaybeKeyed));
+                                                StoreOrigin::kNamed));
 }
 
 RUNTIME_FUNCTION(Runtime_StoreInArrayLiteralIC_Slow) {
@@ -3207,7 +3214,7 @@ RUNTIME_FUNCTION(Runtime_ElementsTransitionAndStoreIC_Miss) {
   HandleScope scope(isolate);
   DCHECK_EQ(6, args.length());
   // Runtime functions don't follow the IC's calling convention.
-  Handle<Object> object = args.at(0);
+  Handle<JSAny> object = args.at<JSAny>(0);
   Handle<Object> key = args.at(1);
   Handle<Object> value = args.at(2);
   DirectHandle<Map> map = args.at<Map>(3);
@@ -3228,12 +3235,11 @@ RUNTIME_FUNCTION(Runtime_ElementsTransitionAndStoreIC_Miss) {
     DCHECK(IsKeyedStoreICKind(kind) || IsSetNamedICKind(kind) ||
            IsDefineKeyedOwnICKind(kind));
     RETURN_RESULT_OR_FAILURE(
-        isolate,
-        IsDefineKeyedOwnICKind(kind)
-            ? Runtime::DefineObjectOwnProperty(isolate, object, key, value,
-                                               StoreOrigin::kMaybeKeyed)
-            : Runtime::SetObjectProperty(isolate, object, key, value,
-                                         StoreOrigin::kMaybeKeyed));
+        isolate, IsDefineKeyedOwnICKind(kind)
+                     ? Runtime::DefineObjectOwnProperty(
+                           isolate, object, key, value, StoreOrigin::kNamed)
+                     : Runtime::SetObjectProperty(isolate, object, key, value,
+                                                  StoreOrigin::kMaybeKeyed));
   }
 }
 
@@ -3526,7 +3532,7 @@ static MaybeHandle<JSObject> CloneObjectSlowPath(Isolate* isolate,
   MAYBE_RETURN(
       JSReceiver::SetOrCopyDataProperties(
           isolate, new_object, source,
-          PropertiesEnumerationMode::kPropertyAdditionOrder, nullptr, false),
+          PropertiesEnumerationMode::kPropertyAdditionOrder, {}, false),
       MaybeHandle<JSObject>());
   return new_object;
 }
@@ -3953,12 +3959,13 @@ RUNTIME_FUNCTION(Runtime_LoadPropertyWithInterceptor) {
   HandleScope scope(isolate);
   DCHECK_EQ(5, args.length());
   Handle<Name> name = args.at<Name>(0);
-  Handle<Object> receiver = args.at(1);
+  Handle<Object> receiver_arg = args.at(1);
   Handle<JSObject> holder = args.at<JSObject>(2);
 
-  if (!IsJSReceiver(*receiver)) {
+  Handle<JSReceiver> receiver;
+  if (!TryCast<JSReceiver>(receiver_arg, &receiver)) {
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-        isolate, receiver, Object::ConvertReceiver(isolate, receiver));
+        isolate, receiver, Object::ConvertReceiver(isolate, receiver_arg));
   }
 
   {
@@ -4102,7 +4109,7 @@ RUNTIME_FUNCTION(Runtime_KeyedHasIC_Miss) {
   HandleScope scope(isolate);
   DCHECK_EQ(4, args.length());
   // Runtime functions don't follow the IC's calling convention.
-  Handle<Object> receiver = args.at(0);
+  Handle<JSAny> receiver = args.at<JSAny>(0);
   Handle<Object> key = args.at(1);
   int slot = args.tagged_index_value_at(2);
   Handle<HeapObject> maybe_vector = args.at<HeapObject>(3);

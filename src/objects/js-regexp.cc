@@ -111,7 +111,7 @@ Handle<JSRegExpResultIndices> JSRegExpResultIndices::BuildIndices(
   // result indices.
   DirectHandle<FixedArrayBase> elements =
       isolate->factory()->empty_fixed_array();
-  Handle<HeapObject> null = Cast<HeapObject>(isolate->factory()->null_value());
+  Handle<Null> null = isolate->factory()->null_value();
   DirectHandle<JSObject> js_group_names =
       isolate->factory()->NewSlowJSObjectWithPropertiesAndElements(
           null, group_names, elements);
@@ -192,9 +192,8 @@ uint32_t CountAdditionalEscapeChars(DirectHandle<String> source,
                                     bool* needs_escapes_out) {
   DisallowGarbageCollection no_gc;
   uint32_t escapes = 0;
-  // FlyWeb: v8 62ee3244 (M132-LTS). The maximum growth-factor is 5 (for \u2028
-  // and \u2029). Make sure that we won't overflow |escapes| given the current
-  // constraints on string length.
+  // The maximum growth-factor is 5 (for \u2028 and \u2029). Make sure that we
+  // won't overflow |escapes| given the current constraints on string length.
   static_assert(uint64_t{String::kMaxLength} * 5 <
                 std::numeric_limits<decltype(escapes)>::max());
   bool needs_escapes = false;

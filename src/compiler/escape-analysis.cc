@@ -622,7 +622,6 @@ void ReduceNode(const Operator* op, EscapeAnalysisTracker::Scope* current,
       Node* value = current->ValueInput(1);
       const VirtualObject* vobject = current->GetVirtualObject(object);
       Variable var;
-      // FlyWeb: v8 91343bb4 (crbug 390743124).
       if (value->opcode() == IrOpcode::kTrustedHeapConstant) {
         // TODO(dmercadier): enable escaping objects containing
         // TrustedHeapConstants. This is currently disabled because it leads to
@@ -863,7 +862,7 @@ void ReduceNode(const Operator* op, EscapeAnalysisTracker::Scope* current,
       FrameState frame_state{current->CurrentNode()};
       FrameStateType type = frame_state.frame_state_info().type();
       // This needs to be kept in sync with the frame types supported in
-      // `OptimizedFrame::Summarize`.
+      // `OptimizedJSFrame::Summarize`.
       if (type != FrameStateType::kUnoptimizedFunction &&
           type != FrameStateType::kJavaScriptBuiltinContinuation &&
           type != FrameStateType::kJavaScriptBuiltinContinuationWithCatch) {

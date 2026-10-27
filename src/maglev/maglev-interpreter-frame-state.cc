@@ -191,7 +191,11 @@ KnownNodeAspects::KnownNodeAspects(const KnownNodeAspects& other,
       }
     }
     if (!loaded_context_slots.empty()) {
-      may_have_aliasing_contexts_ = other.may_have_aliasing_contexts();
+      if (loop_effects->may_have_aliasing_contexts) {
+        may_have_aliasing_contexts_ = ContextSlotLoadsAlias::Yes;
+      } else {
+        may_have_aliasing_contexts_ = other.may_have_aliasing_contexts();
+      }
     }
   }
 
@@ -280,9 +284,11 @@ bool KnownNodeAspects::IsCompatibleWithLoopHeader(
   // Needs to be in sync with `CloneForLoopHeader(zone, true)`.
 
   // Analysis state can change with loads.
-  if (loop_header.may_have_aliasing_contexts() != ContextSlotLoadsAlias::Yes &&
+  if (!loop_header.loaded_context_slots.empty() &&
+      loop_header.may_have_aliasing_contexts() != ContextSlotLoadsAlias::Yes &&
       loop_header.may_have_aliasing_contexts() !=
-          may_have_aliasing_contexts()) {
+          may_have_aliasing_contexts() &&
+      may_have_aliasing_contexts() != ContextSlotLoadsAlias::None) {
     if (V8_UNLIKELY(v8_flags.trace_maglev_loop_speeling)) {
       std::cout << "KNA after loop has incompatible "
                    "loop_header.may_have_aliasing_contexts\n";
@@ -1362,6 +1368,23 @@ void MergePointInterpreterFrameState::ReducePhiPredecessorCount(unsigned num) {
       phi->promote_post_loop_type();
     }
   }
+}
+
+bool MergePointInterpreterFrameState::IsUnreachable() const {
+  DCHECK_EQ(predecessors_so_far_, predecessor_count_);
+  if (predecessor_count_ > 1) {
+    return false;
+  }
+  // This should actually only support predecessor_count == 1, but we
+  // currently don't eliminate resumable loop headers (and subsequent code
+  // until the next resume) that end up being unreachable from JumpLoop.
+  if (predecessor_count_ == 0) {
+    DCHECK(is_resumable_loop());
+    return true;
+  }
+  DCHECK_EQ(predecessor_count_, 1);
+  DCHECK_IMPLIES(is_loop(), predecessor_at(0)->control_node()->Is<JumpLoop>());
+  return is_loop();
 }
 
 }  // namespace maglev

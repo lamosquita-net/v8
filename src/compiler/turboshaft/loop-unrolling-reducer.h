@@ -196,7 +196,6 @@ class V8_EXPORT_PRIVATE LoopUnrollingAnalyzer {
            info.op_count < kMaxLoopSizeForPartialUnrolling;
   }
 
-  // FlyWeb: v8 2e96808 (crbug 383661627), as upstream.
   // The returned unroll count is the total number of copies of the loop body
   // in the resulting graph, i.e., an unroll count of N means N-1 copies of the
   // body which were partially unrolled, and 1 for the original/remaining body.
@@ -251,7 +250,6 @@ class V8_EXPORT_PRIVATE LoopUnrollingAnalyzer {
   // trade-off. In particular, having the number of iterations to unroll be a
   // function of the loop's size and a MaxLoopSize could make sense.
   static constexpr size_t kMaxLoopSizeForFullUnrolling = 150;
-  // FlyWeb: v8 2e96808.
   // This function size limit is quite arbitrary. It is large enough that we
   // probably never hit it in JavaScript and it is lower than the operation
   // count we have seen in some huge Wasm functions in the past, e.g., function

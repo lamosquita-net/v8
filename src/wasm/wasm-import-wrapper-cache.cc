@@ -78,7 +78,7 @@ WasmCode* WasmImportWrapperCache::ModificationScope::AddWrapper(
     WritableJitAllocation jit_allocation =
         ThreadIsolation::RegisterJitAllocation(
             reinterpret_cast<Address>(code_space.begin()), code_space.size(),
-            ThreadIsolation::JitAllocationType::kWasmCode);
+            ThreadIsolation::JitAllocationType::kWasmCode, true);
     jit_allocation.CopyCode(0, desc.buffer, desc.instr_size);
 
     intptr_t delta = code_space.begin() - desc.buffer;
@@ -137,20 +137,18 @@ WasmCode* WasmImportWrapperCache::ModificationScope::AddWrapper(
 }
 
 WasmCode* WasmImportWrapperCache::CompileWasmImportCallWrapper(
-    Isolate* isolate, NativeModule* native_module, ImportCallKind kind,
-    const CanonicalSig* sig, uint32_t canonical_sig_index,
-    bool source_positions, int expected_arity, Suspend suspend) {
-  CompilationEnv env = CompilationEnv::ForModule(native_module);
+    Isolate* isolate, ImportCallKind kind, const CanonicalSig* sig,
+    CanonicalTypeIndex sig_index, bool source_positions, int expected_arity,
+    Suspend suspend) {
   WasmCompilationResult result = compiler::CompileWasmImportCallWrapper(
-      &env, kind, sig, source_positions, expected_arity, suspend);
+      kind, sig, source_positions, expected_arity, suspend);
   WasmCode* wasm_code;
   {
     ModificationScope cache_scope(this);
-    CacheKey key(kind, canonical_sig_index, expected_arity, suspend);
+    CacheKey key(kind, sig_index, expected_arity, suspend);
     // Now that we have the lock (in the form of the cache_scope), check
     // again whether another thread has just created the wrapper.
     wasm_code = cache_scope[key];
-    // FlyWeb: v8 924c1a79 (crbug 391907159). Replace a dying wrapper.
     if (wasm_code) {
       WasmCodeRefScope::AddRef(wasm_code);
       if (!wasm_code->is_dying()) return wasm_code;
@@ -167,8 +165,7 @@ WasmCode* WasmImportWrapperCache::CompileWasmImportCallWrapper(
       wasm_code->instructions().length());
   isolate->counters()->wasm_reloc_size()->Increment(
       wasm_code->reloc_info().length());
-  if (V8_UNLIKELY(native_module->log_code())) {
-    GetWasmEngine()->LogWrapperCode(base::VectorOf(&wasm_code, 1));
+  if (GetWasmEngine()->LogWrapperCode(wasm_code)) {
     // Log the code immediately in the current isolate.
     GetWasmEngine()->LogOutstandingCodesForIsolate(isolate);
   }
@@ -211,17 +208,14 @@ void WasmImportWrapperCache::Free(std::vector<WasmCode*>& wrappers) {
 }
 
 WasmCode* WasmImportWrapperCache::MaybeGet(ImportCallKind kind,
-                                           uint32_t canonical_type_index,
+                                           CanonicalTypeIndex type_index,
                                            int expected_arity,
                                            Suspend suspend) const {
   base::MutexGuard lock(&mutex_);
 
-  auto it =
-      entry_map_.find({kind, canonical_type_index, expected_arity, suspend});
+  auto it = entry_map_.find({kind, type_index, expected_arity, suspend});
   if (it == entry_map_.end()) return nullptr;
   WasmCodeRefScope::AddRef(it->second);
-  // FlyWeb: v8 924c1a79 (crbug 391907159). Never hand out a wrapper that is
-  // already potentially dead: the Wasm code GC could free it while in use.
   if (it->second->is_dying()) return nullptr;
   return it->second;
 }

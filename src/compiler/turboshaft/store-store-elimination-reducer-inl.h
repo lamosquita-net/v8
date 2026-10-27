@@ -203,16 +203,6 @@ class MaybeRedundantStoresTable
     }
   }
 
-  // FlyWeb: v8 67c8f3a9 (crbug 547936520).
-  void InvalidateBasesInRange(BlockIndex start, BlockIndex end) {
-    for (Key key : active_keys_) {
-      BlockIndex base_block = graph_.BlockOf(key.data().base);
-      if (base_block >= start && base_block <= end) {
-        Set(key, StoreObservability::kObservable);
-      }
-    }
-  }
-
   void MarkAllStoresAsGCObservable() {
     for (Key key : active_keys_) {
       auto current = Get(key);
@@ -306,18 +296,12 @@ class RedundantStoreAnalysis {
       // If this block is a loop header, check if this loop needs to be
       // revisited.
       if (block.IsLoop()) {
-        Block* back_edge = block.LastPredecessor();
-        DCHECK_GE(back_edge->index(), block_index);
-        // FlyWeb: v8 67c8f3a9 (crbug 547936520). Objects allocated inside the
-        // loop body are distinct across iterations: invalidate their store
-        // observability across the backedge (the block range is a
-        // conservative overapproximation of the loop).
-        table_.InvalidateBasesInRange(block_index, back_edge->index());
-
         DCHECK(!table_.IsSealed());
         bool needs_revisit = false;
         table_.Seal(&needs_revisit);
         if (needs_revisit) {
+          Block* back_edge = block.LastPredecessor();
+          DCHECK_GE(back_edge->index(), block_index);
           processed = back_edge->index().id() + 1;
         }
       }
@@ -341,14 +325,11 @@ class RedundantStoreAnalysis {
           // TODO(nicohartmann@): Use the new effect flags to distinguish heap
           // access once available.
           const bool is_on_heap_store = store.kind.tagged_base;
-          const bool is_field_store = !store.index().valid();
+          const bool is_fixed_offset_store = !store.index().valid();
           const uint8_t size = store.stored_rep.SizeInBytes();
-          // For now we consider only stores of fields of objects on the heap.
-          if (is_on_heap_store && is_field_store) {
-            // FlyWeb: v8 67c8f3a9. When revisiting a loop, a previous visit
-            // may have marked this store eliminable; drop that decision and
-            // re-add it below only if it still holds.
-            eliminable_stores_->erase(index);
+          // For now we consider only stores of fixed offsets of objects on the
+          // heap.
+          if (is_on_heap_store && is_fixed_offset_store) {
             bool is_eliminable_store = false;
             switch (table_.GetObservability(store.base(), store.offset, size)) {
               case StoreObservability::kUnobservable:
@@ -437,13 +418,12 @@ class RedundantStoreAnalysis {
           const bool is_on_heap_load = load.kind.tagged_base;
           const bool is_fixed_offset_load = !load.index().valid();
           // For now we consider only loads of fields of objects on the heap.
-          // FlyWeb: a dynamically indexed load might alias any fixed offset
-          // (CVE-2025-5419, v8 7bc0a67e, crbug 420636529).
           if (is_on_heap_load) {
             if (is_fixed_offset_load) {
               table_.MarkPotentiallyAliasingStoresAsObservable(load.base(),
                                                                load.offset);
             } else {
+              // A dynamically indexed load might alias any fixed offset.
               table_.MarkAllStoresAsObservable();
             }
           }

@@ -337,6 +337,9 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // Provides access to Context slots that are known to be pointers.
   static FieldAccess ForContextSlotKnownPointer(size_t index);
 
+  // Provides access to Context slots that are known to be Smis.
+  static FieldAccess ForContextSlotSmi(size_t index);
+
   // Provides access to WeakFixedArray elements.
   static ElementAccess ForWeakFixedArrayElement();
   static FieldAccess ForWeakFixedArraySlot(int index);
@@ -400,6 +403,8 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   static FieldAccess ForWasmArrayLength();
   static FieldAccess ForWasmDispatchTableLength();
 #endif
+
+  static FieldAccess ForContextSideProperty();
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(AccessBuilder);

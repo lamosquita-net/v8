@@ -41,7 +41,6 @@ PreParserIdentifier GetIdentifierHelper(Scanner* scanner,
   if (string == avf->constructor_string()) {
     return PreParserIdentifier::Constructor();
   }
-  // FlyWeb: v8 9a884b1b (crbug 430344952): "eval" with escapes is still eval.
   if (string == avf->eval_string()) {
     return PreParserIdentifier::Eval();
   }

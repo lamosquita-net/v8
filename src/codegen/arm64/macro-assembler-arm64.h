@@ -35,6 +35,10 @@
 namespace v8 {
 namespace internal {
 
+namespace wasm {
+class JumpTableAssembler;
+}
+
 #define LS_MACRO_LIST(V)                                     \
   V(Ldrb, Register&, rt, LDRB_w)                             \
   V(Strb, Register&, rt, STRB_w)                             \
@@ -1096,6 +1100,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void CallJSFunction(Register function_object, uint16_t argument_count);
   void JumpJSFunction(Register function_object,
                       JumpMode jump_mode = JumpMode::kJump);
+  void ResolveWasmCodePointer(Register target);
+  void CallWasmCodePointer(Register target,
+                           CallJumpMode call_jump_mode = CallJumpMode::kCall);
+  void LoadWasmCodePointer(Register dst, MemOperand src);
 
   // Generates an instruction sequence s.t. the return address points to the
   // instruction following the call.
@@ -2425,6 +2433,8 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 
   void JumpHelper(int64_t offset, RelocInfo::Mode rmode, Condition cond = al);
 
+  friend class wasm::JumpTableAssembler;
+
   DISALLOW_IMPLICIT_CONSTRUCTORS(MacroAssembler);
 };
 
@@ -2434,7 +2444,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 // emitted is what you specified when creating the scope.
 class V8_NODISCARD InstructionAccurateScope {
  public:
-  explicit InstructionAccurateScope(MacroAssembler* masm, size_t count = 0)
+  explicit InstructionAccurateScope(MacroAssembler* masm, size_t count)
       : masm_(masm),
         block_pool_(masm, count * kInstrSize)
 #ifdef DEBUG
@@ -2442,12 +2452,11 @@ class V8_NODISCARD InstructionAccurateScope {
         size_(count * kInstrSize)
 #endif
   {
+    DCHECK_GT(count, 0);
     masm_->CheckVeneerPool(false, true, count * kInstrSize);
     masm_->StartBlockVeneerPool();
 #ifdef DEBUG
-    if (count != 0) {
-      masm_->bind(&start_);
-    }
+    masm_->bind(&start_);
     previous_allow_macro_instructions_ = masm_->allow_macro_instructions();
     masm_->set_allow_macro_instructions(false);
 #endif
@@ -2456,9 +2465,7 @@ class V8_NODISCARD InstructionAccurateScope {
   ~InstructionAccurateScope() {
     masm_->EndBlockVeneerPool();
 #ifdef DEBUG
-    if (start_.is_bound()) {
-      DCHECK(masm_->SizeOfCodeGeneratedSince(&start_) == size_);
-    }
+    DCHECK(masm_->SizeOfCodeGeneratedSince(&start_) == size_);
     masm_->set_allow_macro_instructions(previous_allow_macro_instructions_);
 #endif
   }

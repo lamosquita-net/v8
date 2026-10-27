@@ -15,6 +15,16 @@
 
 namespace v8::internal::compiler::turboshaft {
 
+#ifdef DEBUG
+#define TRACE(x)                                    \
+  do {                                              \
+    if (v8_flags.turboshaft_trace_load_elimination) \
+      StdoutStream() << x << std::endl;             \
+  } while (false)
+#else
+#define TRACE(x)
+#endif
+
 void LateLoadEliminationAnalyzer::Run() {
   LoopFinder loop_finder(phase_zone_, &graph_);
   AnalyzerIterator iterator(phase_zone_, graph_, loop_finder);
@@ -368,9 +378,14 @@ void LateLoadEliminationAnalyzer::ProcessStore(OpIndex op_idx,
   }
 
   // If we just stored a map, invalidate all object_maps_.
-  // FlyWeb: v8 37d6fa3f (M132-LTS 5cf18d03, crbug 417169470): other objects may
-  // alias {store.base()}. The upstream tracing code is left out.
   if (store.offset == HeapObject::kMapOffset && !store.index().valid()) {
+    // TODO(dmercadier): can we only do this for objects that are potentially
+    // aliasing with the `base` (based on their maps and the maps of `base`)?
+    // Also, it might be worth to record a new map if this is actually a map
+    // store.
+    // TODO(dmercadier): do this only if `value` is a Constant with kind
+    // kHeapObject, since all map stores should store a known constant maps.
+    TRACE(">> Wiping all maps\n");
     for (auto it : object_maps_) {
       object_maps_.Set(it.second, MapMaskAndOr{});
     }

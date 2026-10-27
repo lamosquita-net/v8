@@ -307,7 +307,7 @@ void WasmGCTypeAnalyzer::ProcessRefFunc(const WasmRefFuncOp& ref_func) {
 
 void WasmGCTypeAnalyzer::ProcessAllocateArray(
     const WasmAllocateArrayOp& allocate_array) {
-  uint32_t type_index =
+  wasm::ModuleTypeIndex type_index =
       graph_.Get(allocate_array.rtt()).Cast<RttCanonOp>().type_index;
   RefineTypeKnowledge(graph_.Index(allocate_array),
                       wasm::ValueType::Ref(type_index), allocate_array);
@@ -315,7 +315,7 @@ void WasmGCTypeAnalyzer::ProcessAllocateArray(
 
 void WasmGCTypeAnalyzer::ProcessAllocateStruct(
     const WasmAllocateStructOp& allocate_struct) {
-  uint32_t type_index =
+  wasm::ModuleTypeIndex type_index =
       graph_.Get(allocate_struct.rtt()).Cast<RttCanonOp>().type_index;
   RefineTypeKnowledge(graph_.Index(allocate_struct),
                       wasm::ValueType::Ref(type_index), allocate_struct);
@@ -550,10 +550,14 @@ wasm::ValueType WasmGCTypeAnalyzer::RefineTypeKnowledge(
         OpcodeName(graph_.Get(object).opcode), intersection_type.name().c_str(),
         intersection_type.is_uninhabited() ? " (unreachable!)" : "");
 
-  if (intersection_type.is_uninhabited()) {
-    block_is_unreachable_.Add(current_block_->index().id());
-  }
   types_table_.Set(object, intersection_type);
+  if (intersection_type.is_uninhabited()) {
+    // After this instruction all other instructions in the current block are
+    // unreachable.
+    block_is_unreachable_.Add(current_block_->index().id());
+    // Return bottom to indicate that the operation `op` shall always trap.
+    return wasm::kWasmBottom;
+  }
   return previous_value;
 }
 
@@ -570,10 +574,14 @@ wasm::ValueType WasmGCTypeAnalyzer::RefineTypeKnowledgeNotNull(
         OpcodeName(graph_.Get(object).opcode), not_null_type.name().c_str(),
         not_null_type.is_uninhabited() ? " (unreachable!)" : "");
 
-  if (not_null_type.is_uninhabited()) {
-    block_is_unreachable_.Add(current_block_->index().id());
-  }
   types_table_.Set(object, not_null_type);
+  if (not_null_type.is_uninhabited()) {
+    // After this instruction all other instructions in the current block are
+    // unreachable.
+    block_is_unreachable_.Add(current_block_->index().id());
+    // Return bottom to indicate that the operation `op` shall always trap.
+    return wasm::kWasmBottom;
+  }
   return previous_value;
 }
 

@@ -204,11 +204,13 @@ class AnyUseMarkingProcessor {
     return ProcessResult::kContinue;
   }
 
-#ifdef DEBUG
+  // FlyWeb: dead context-slot stores (MarkNodeDead) are only swept by the phi
+  // representation selector, which does not run with maglev_untagged_phis off
+  // (CVE-2026-3910). Remove them here, as upstream does; otherwise they reach
+  // MarkTaggedInputsAsDecompressing/GenerateCode, which are UNREACHABLE.
   ProcessResult Process(Dead* node, const ProcessingState& state) {
-    UNREACHABLE();
+    return ProcessResult::kRemove;
   }
-#endif  // DEBUG
 
   void PostProcessGraph(Graph* graph) {
     RunEscapeAnalysis(graph);

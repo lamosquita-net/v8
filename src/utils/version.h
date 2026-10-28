@@ -7,7 +7,7 @@
 
 #include <cstdint>
 
-#include "src/base/functional.h"
+#include "src/base/hashing.h"
 
 namespace v8 {
 
@@ -44,8 +44,9 @@ class V8_EXPORT Version {
   // 15 = seg/v8-13.0 (FlyWeb 1.14), 16 = seg/v8-13.1 (FlyWeb 1.15),
   // 17 = FlyWeb 2.0.1 (CVE-2026-11645), 18 = seg/v8-13.1-lle (FlyWeb 2.0.4),
   // 19 = seg/v8-13.2 (engine level 132), 20 = seg/fs29-v8 (new bytecode
-  // DefineNamedOwnPropertyInLiteral).
-  static constexpr int kFlyWebCacheEpoch = 20;
+  // DefineNamedOwnPropertyInLiteral), 21 = engine level 133 (V8 13.3 with
+  // the M132-LTS backports it lacks).
+  static constexpr int kFlyWebCacheEpoch = 21;
   static uint32_t Hash() {
     return static_cast<uint32_t>(base::hash_combine(
         major_, minor_, build_, patch_, kFlyWebCacheEpoch));

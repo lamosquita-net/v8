@@ -344,7 +344,9 @@ class Pipeline {
           RegisterConfiguration::RestrictGeneralRegisters(registers));
       config = restricted_config.get();
     }
-    AllocateRegisters(config, call_descriptor, run_verifier);
+    if (!AllocateRegisters(config, call_descriptor, run_verifier)) {
+      return false;
+    }
 
     // Verify the instruction sequence has the same hash in two stages.
     VerifyGeneratedCodeIsIdempotent();
@@ -392,8 +394,9 @@ class Pipeline {
     }
   }
 
-  void AllocateRegisters(const RegisterConfiguration* config,
-                         CallDescriptor* call_descriptor, bool run_verifier) {
+  [[nodiscard]] bool AllocateRegisters(const RegisterConfiguration* config,
+                                       CallDescriptor* call_descriptor,
+                                       bool run_verifier) {
     // Don't track usage for this zone in compiler stats.
     std::unique_ptr<Zone> verifier_zone;
     RegisterAllocatorVerifier* verifier = nullptr;
@@ -445,6 +448,20 @@ class Pipeline {
 
     Run<DecideSpillingModePhase>();
     Run<AssignSpillSlotsPhase>();
+
+    // The prologue grows the frame with a single stack pointer decrement,
+    // before the function entry stack check runs. A frame no larger than the
+    // smallest OS page cannot step over a guard page, so bail out rather than
+    // emit an unchecked stack pointer jump of arbitrary size (FlyWeb: port of
+    // v8 ea2f03dfff, crbug 574660146).
+    constexpr int kMaxStackSlots = 4 * KB / kSystemPointerSize;
+    if (data_->info()->IsOptimizing() &&
+        data_->frame()->GetTotalFrameSlotCount() > kMaxStackSlots) {
+      data_->info()->AbortOptimization(BailoutReason::kFunctionTooBig);
+      data()->ClearRegisterComponent();
+      return false;
+    }
+
     Run<CommitAssignmentPhase>();
 
     // TODO(chromium:725559): remove this check once
@@ -478,6 +495,7 @@ class Pipeline {
     }
 
     data()->ClearRegisterComponent();
+    return true;
   }
 
   void AssembleCode(Linkage* linkage) {
@@ -507,7 +525,9 @@ class Pipeline {
     if (!SelectInstructions(&linkage)) {
       return MaybeHandle<Code>();
     }
-    AllocateRegisters(linkage.GetIncomingDescriptor());
+    if (!AllocateRegisters(linkage.GetIncomingDescriptor())) {
+      return MaybeHandle<Code>();
+    }
     AssembleCode(&linkage);
     return FinalizeCode();
   }

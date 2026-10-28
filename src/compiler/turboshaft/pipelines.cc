@@ -47,7 +47,9 @@ void Pipeline::RecreateTurbofanGraph(compiler::TFPipelineData* turbofan_data,
     if (!SelectInstructions(linkage)) {
       return false;
     }
-    AllocateRegisters(linkage->GetIncomingDescriptor());
+    if (!AllocateRegisters(linkage->GetIncomingDescriptor())) {
+      return false;
+    }
     // Generate the final machine code.
     AssembleCode(linkage);
   }

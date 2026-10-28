@@ -213,8 +213,9 @@ class PipelineImpl final {
   void RunPrintAndVerify(const char* phase, bool untyped = false);
   bool SelectInstructionsAndAssemble(CallDescriptor* call_descriptor);
   MaybeHandle<Code> GenerateCode(CallDescriptor* call_descriptor);
-  void AllocateRegisters(const RegisterConfiguration* config,
-                         CallDescriptor* call_descriptor, bool run_verifier);
+  [[nodiscard]] bool AllocateRegisters(const RegisterConfiguration* config,
+                                       CallDescriptor* call_descriptor,
+                                       bool run_verifier);
 
   TFPipelineData* data() const { return data_; }
   OptimizedCompilationInfo* info() const;
@@ -523,7 +524,10 @@ TurbofanPipelineStatistics* CreatePipelineStatistics(
     // We can release the graph now.
     turboshaft_data->ClearGraphComponent();
 
-    turboshaft_pipeline.AllocateRegisters(linkage->GetIncomingDescriptor());
+    if (!turboshaft_pipeline.AllocateRegisters(
+            linkage->GetIncomingDescriptor())) {
+      return false;
+    }
     turboshaft_pipeline.AssembleCode(linkage);
     return true;
   } else {
@@ -4030,7 +4034,7 @@ bool PipelineImpl::AllocateRegisters(CallDescriptor* call_descriptor,
         RegisterConfiguration::RestrictGeneralRegisters(registers));
     config = restricted_config.get();
   }
-  AllocateRegisters(config, call_descriptor, run_verifier);
+  if (!AllocateRegisters(config, call_descriptor, run_verifier)) return false;
 
   // Verify the instruction sequence has the same hash in two stages.
   VerifyGeneratedCodeIsIdempotent();
@@ -4211,7 +4215,7 @@ void TraceSequence(OptimizedCompilationInfo* info, TFPipelineData* data,
 
 }  // namespace
 
-void PipelineImpl::AllocateRegisters(const RegisterConfiguration* config,
+bool PipelineImpl::AllocateRegisters(const RegisterConfiguration* config,
                                      CallDescriptor* call_descriptor,
                                      bool run_verifier) {
   TFPipelineData* data = this->data_;
@@ -4264,6 +4268,20 @@ void PipelineImpl::AllocateRegisters(const RegisterConfiguration* config,
 
   Run<DecideSpillingModePhase>();
   Run<AssignSpillSlotsPhase>();
+
+  // The prologue grows the frame with a single stack pointer decrement,
+  // before the function entry stack check runs. A frame no larger than the
+  // smallest OS page cannot step over a guard page, so bail out rather than
+  // emit an unchecked stack pointer jump of arbitrary size (FlyWeb: port of
+  // v8 ea2f03dfff, crbug 574660146).
+  constexpr int kMaxStackSlots = 4 * KB / kSystemPointerSize;
+  if (info()->IsOptimizing() &&
+      data->frame()->GetTotalFrameSlotCount() > kMaxStackSlots) {
+    info()->AbortOptimization(BailoutReason::kFunctionTooBig);
+    data->DeleteRegisterAllocationZone();
+    return false;
+  }
+
   Run<CommitAssignmentPhase>();
 
   // TODO(chromium:725559): remove this check once
@@ -4297,6 +4315,7 @@ void PipelineImpl::AllocateRegisters(const RegisterConfiguration* config,
   }
 
   data->DeleteRegisterAllocationZone();
+  return true;
 }
 
 OptimizedCompilationInfo* PipelineImpl::info() const { return data_->info(); }

@@ -34,6 +34,14 @@ os_unfair_lock_lock_with_options(os_unfair_lock* lock,
 }
 
 void SpinningMutex::Lock() {
+  // FlyWeb: macOS 10.14 has os_unfair_lock_lock_with_options but rejects
+  // OS_UNFAIR_LOCK_ADAPTIVE_SPIN (10.15+) with "BUG IN CLIENT OF LIBPLATFORM:
+  // Invalid options" and a trap, which killed every renderer on Mojave.
+  if (__builtin_available(macOS 10.15, *)) {
+  } else {
+    os_unfair_lock_lock(&lock_);
+    return;
+  }
   if (os_unfair_lock_lock_with_options) {
     const os_unfair_lock_options_t options =
         static_cast<os_unfair_lock_options_t>(

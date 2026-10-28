@@ -218,10 +218,11 @@ uint64_t CodeDataSourceIncrementalState::InternJsFunction(
   if (start_position >= 0) {
     function_proto->set_byte_offset(static_cast<uint32_t>(start_position));
   }
-  if (line_num > 0 && column_num > 0) {
-    function_proto->set_line(static_cast<uint32_t>(line_num));
-    function_proto->set_column(static_cast<uint32_t>(column_num));
-  }
+  // FlyWeb: the perfetto protos of the Chromium 128 base have no line and
+  // column in InternedV8JsFunction (added for V8 13.4), so they are not
+  // written; the byte offset above still locates the function.
+  static_cast<void>(line_num);
+  static_cast<void>(column_num);
 
   return iid;
 }

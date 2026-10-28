@@ -132,9 +132,9 @@ class ExternalAssemblerBufferImpl : public AssemblerBuffer {
   const int size_;
 };
 
-static thread_local std::aligned_storage_t<sizeof(ExternalAssemblerBufferImpl),
-                                           alignof(ExternalAssemblerBufferImpl)>
-    tls_singleton_storage;
+alignas(
+    ExternalAssemblerBufferImpl) static thread_local char tls_singleton_storage
+    [sizeof(ExternalAssemblerBufferImpl)];
 
 static thread_local bool tls_singleton_taken{false};
 
@@ -142,13 +142,13 @@ void* ExternalAssemblerBufferImpl::operator new(std::size_t count) {
   DCHECK_EQ(count, sizeof(ExternalAssemblerBufferImpl));
   if (V8_LIKELY(!tls_singleton_taken)) {
     tls_singleton_taken = true;
-    return &tls_singleton_storage;
+    return tls_singleton_storage;
   }
   return ::operator new(count);
 }
 
 void ExternalAssemblerBufferImpl::operator delete(void* ptr) noexcept {
-  if (V8_LIKELY(ptr == &tls_singleton_storage)) {
+  if (V8_LIKELY(ptr == tls_singleton_storage)) {
     DCHECK(tls_singleton_taken);
     tls_singleton_taken = false;
     return;
@@ -301,6 +301,11 @@ IndirectHandle<HeapObject> AssemblerBase::GetEmbeddedObject(
     EmbeddedObjectIndex index) const {
   DCHECK_LT(index, embedded_objects_.size());
   return embedded_objects_[index];
+}
+
+void AssemblerBase::RecordJSDispatchHandle(JSDispatchHandle handle,
+                                           uint16_t argument_count) {
+  js_dispatch_handles_.push_back({handle, argument_count});
 }
 
 int Assembler::WriteCodeComments() {

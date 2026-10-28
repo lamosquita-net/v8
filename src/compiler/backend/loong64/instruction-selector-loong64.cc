@@ -2074,6 +2074,12 @@ void InstructionSelectorT<Adapter>::VisitTruncateFloat64ToFloat16RawBits(
 }
 
 template <typename Adapter>
+void InstructionSelectorT<Adapter>::VisitChangeFloat16RawBitsToFloat64(
+    node_t node) {
+  UNIMPLEMENTED();
+}
+
+template <typename Adapter>
 void InstructionSelectorT<Adapter>::VisitTryTruncateFloat32ToInt64(
     node_t node) {
   Loong64OperandGeneratorT<Adapter> g(this);
@@ -2689,15 +2695,11 @@ void InstructionSelectorT<Adapter>::VisitFloat64Ieee754Unop(
 template <typename Adapter>
 void InstructionSelectorT<Adapter>::EmitMoveParamToFPR(node_t node,
                                                        int32_t index) {
-  if constexpr (Adapter::IsTurboshaft) {
-    UNIMPLEMENTED();
-  } else {
-    OperandGenerator g(this);
-    int count = linkage()->GetParameterLocation(index).GetLocation();
-    InstructionOperand out_op = g.TempRegister(-count);
-    Emit(kArchNop, out_op);
-    Emit(kLoong64BitcastLD, g.DefineAsRegister(node), out_op);
-  }
+  OperandGenerator g(this);
+  int count = linkage()->GetParameterLocation(index).GetLocation();
+  InstructionOperand out_op = g.TempRegister(-count);
+  Emit(kArchNop, out_op);
+  Emit(kLoong64BitcastLD, g.DefineAsRegister(node), out_op);
 }
 
 template <typename Adapter>

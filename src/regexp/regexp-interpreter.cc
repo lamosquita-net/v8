@@ -287,14 +287,14 @@ IrregexpInterpreter::Result HandleInterrupts(
     DCHECK(call_origin == RegExp::CallOrigin::kFromRuntime);
     // Prepare for possible GC.
     HandleScope handles(isolate);
-    Handle<TrustedByteArray> code_handle(*code_array_out, isolate);
-    Handle<String> subject_handle(*subject_string_out, isolate);
+    DirectHandle<TrustedByteArray> code_handle(*code_array_out, isolate);
+    DirectHandle<String> subject_handle(*subject_string_out, isolate);
 
     if (js_has_overflowed) {
       return ThrowStackOverflow(isolate, call_origin);
     } else if (check.InterruptRequested()) {
       const bool was_one_byte =
-          (*subject_string_out)->IsOneByteRepresentation();
+          String::IsOneByteRepresentationUnderneath(*subject_string_out);
       Tagged<Object> result;
       {
         AllowGarbageCollection yes_gc;
@@ -307,7 +307,8 @@ IrregexpInterpreter::Result HandleInterrupts(
       // If we changed between a LATIN1 and a UC16 string, we need to
       // restart regexp matching with the appropriate template instantiation of
       // RawMatch.
-      if (subject_handle->IsOneByteRepresentation() != was_one_byte) {
+      if (String::IsOneByteRepresentationUnderneath(*subject_handle) !=
+          was_one_byte) {
         return IrregexpInterpreter::RETRY;
       }
 
@@ -1074,7 +1075,7 @@ int IrregexpInterpreter::Match(Isolate* isolate,
 
   bool is_any_unicode =
       IsEitherUnicode(JSRegExp::AsRegExpFlags(regexp_data->flags()));
-  bool is_one_byte = subject_string->IsOneByteRepresentation();
+  bool is_one_byte = String::IsOneByteRepresentationUnderneath(subject_string);
   Tagged<TrustedByteArray> code_array = regexp_data->bytecode(is_one_byte);
   int total_register_count = regexp_data->max_register_count();
 

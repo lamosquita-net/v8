@@ -55,6 +55,8 @@ namespace v8 {
 namespace internal {
 namespace maglev {
 
+constexpr uint32_t kMaxStackSlots = 4 * KB / kSystemPointerSize;
+
 // static
 bool MaglevCompiler::Compile(LocalIsolate* local_isolate,
                              MaglevCompilationInfo* compilation_info) {
@@ -94,6 +96,29 @@ bool MaglevCompiler::Compile(LocalIsolate* local_isolate,
                                  std::cout);
       if (v8_flags.maglev_print_feedback) {
         Print(*top_level_unit->feedback().object(), std::cout);
+      }
+    }
+
+    // FlyWeb: 13.3's graph builder cannot abort (v8 24ae3662bf is not
+    // ported), so bail out before building when a node could need more inputs
+    // than it can hold:
+    // - a SuspendGenerator with too many registers (v8 618d1a0290, crbug
+    //   444048019; generators are never inlined);
+    // - a merge with too many predecessors (v8 24ae3662bf, crbug 441668149):
+    //   each predecessor (a jump, a fallthrough or a throwing bytecode) is a
+    //   bytecode of at least one byte and peeling counts one at most twice, so
+    //   a bytecode shorter than kMaxInputs / 2 cannot get there (TurboFan stops
+    //   at 60 KB anyway). Inlined functions are far below that.
+    {
+      // Like TurboFan, also bail out on max_optimized_bytecode_size (v8
+      // d6a92ca485, crbug 536945254).
+      MaglevCompilationUnit* unit = compilation_info->toplevel_compilation_unit();
+      if (unit->parameter_count() + unit->register_count() +
+                  GeneratorStore::kFixedInputCount >
+              Node::kMaxInputs ||
+          unit->bytecode().length() >= Node::kMaxInputs / 2 ||
+          unit->bytecode().length() > v8_flags.max_optimized_bytecode_size) {
+        return false;
       }
     }
 
@@ -205,6 +230,15 @@ bool MaglevCompiler::Compile(LocalIsolate* local_isolate,
       std::cout << "After register allocation" << std::endl;
       PrintGraph(std::cout, compilation_info, graph);
     }
+  }
+
+  // The prologue grows the frame with a single stack pointer decrement, before
+  // FunctionEntryStackCheck runs. A frame no larger than the smallest OS page
+  // cannot step over a guard page, so bail out rather than emit an unchecked
+  // stack pointer jump of arbitrary size (FlyWeb: port of v8 d6a92ca485).
+  if (graph->tagged_stack_slots() + graph->untagged_stack_slots() >
+      kMaxStackSlots) {
+    return false;
   }
 
   {

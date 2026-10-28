@@ -912,7 +912,7 @@ void Builtins::Generate_InterpreterEntryTrampoline(
 #ifndef V8_JITLESS
 #ifndef V8_ENABLE_LEAPTIERING
   // If feedback vector is valid, check for optimized code and update invocation
-  // count. Load the optimization state from the feedback vector and re-use the
+  // count. Load the optimization state from the feedback vector and reuse the
   // register.
   Label flags_need_processing;
   Register flags = ecx;
@@ -1879,7 +1879,7 @@ void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
 #ifdef V8_ENABLE_LEAPTIERING
   __ movd(saved_feedback_vector, feedback_vector);
 #else
-  // Load the optimization state from the feedback vector and re-use the
+  // Load the optimization state from the feedback vector and reuse the
   // register.
   Label flags_need_processing;
   Register flags = ecx;
@@ -1975,7 +1975,7 @@ void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
       // Push the baseline code return address now, as if it had been pushed by
       // the call to this builtin.
       __ PushReturnAddressFrom(return_address, scratch);
-      FrameScope frame_scope(masm, StackFrame::INTERNAL);
+      FrameScope manual_frame_scope(masm, StackFrame::INTERNAL);
       // Save incoming new target or generator
       __ Push(kJavaScriptCallNewTargetRegister);
       __ SmiTag(frame_size);
@@ -2477,10 +2477,10 @@ void Builtins::Generate_CallOrConstructForwardVarargs(MacroAssembler* masm,
 
   __ movd(xmm0, esi);  // Spill the context.
 
-  Register scratch = esi;
-
   // Check if new.target has a [[Construct]] internal method.
   if (mode == CallOrConstructMode::kConstruct) {
+    Register scratch = esi;
+
     Label new_target_constructor, new_target_not_constructor;
     __ JumpIfSmi(edx, &new_target_not_constructor, Label::kNear);
     __ mov(scratch, FieldOperand(edx, HeapObject::kMapOffset));
@@ -3485,6 +3485,10 @@ void SwitchToAllocatedStack(MacroAssembler* masm, Register wrapper_buffer,
   // the parent frame.
   __ mov(original_fp, ebp);
   LoadTargetJumpBuffer(masm, target_continuation, wasm::JumpBuffer::Suspended);
+  // Return address slot. The builtin itself returns by switching to the parent
+  // jump buffer and does not actually use this slot, but it is read by the
+  // profiler.
+  __ Push(Immediate(0));
   // Push the loaded ebp. We know it is null, because there is no frame yet,
   // so we could also push 0 directly. In any case we need to push it, because
   // this marks the base of the stack segment for the stack frame iterator.

@@ -10,6 +10,8 @@
 #include "src/codegen/reloc-info-inl.h"
 #include "src/codegen/reloc-info.h"
 #include "src/objects/instruction-stream-inl.h"
+#include "src/init/isolate-group.h"
+#include "src/sandbox/js-dispatch-table-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -128,6 +130,22 @@ InstructionStream::WriteBarrierPromise::~WriteBarrierPromise() {
   DCHECK(delayed_write_barriers_.empty());
 }
 #endif
+
+void InstructionStream::ValidateJSDispatchHandles(Heap* heap,
+                                                  const CodeDesc& desc) {
+#ifdef V8_ENABLE_LEAPTIERING
+  if (desc.origin) {
+    for (const auto& pair : desc.origin->js_dispatch_handles()) {
+      JSDispatchHandle handle = pair.first;
+      uint16_t expected_arg_count = pair.second;
+      uint16_t actual_arg_count =
+          IsolateGroup::current()->js_dispatch_table()->GetParameterCount(
+              handle);
+      SBXCHECK_EQ(expected_arg_count, actual_arg_count);
+    }
+  }
+#endif  // V8_ENABLE_LEAPTIERING
+}
 
 }  // namespace internal
 }  // namespace v8

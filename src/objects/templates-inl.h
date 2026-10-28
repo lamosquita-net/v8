@@ -6,6 +6,7 @@
 #define V8_OBJECTS_TEMPLATES_INL_H_
 
 #include "src/heap/heap-write-barrier-inl.h"
+#include "src/objects/dictionary.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/oddball.h"
 #include "src/objects/shared-function-info.h"
@@ -333,7 +334,7 @@ template <typename InstantiationType, typename TemplateInfoType>
 void TemplateInfo::CacheTemplateInstantiation(
     Isolate* isolate, DirectHandle<NativeContext> native_context,
     DirectHandle<TemplateInfoType> data, CachingMode caching_mode,
-    Handle<InstantiationType> object) {
+    DirectHandle<InstantiationType> object) {
   DCHECK_NE(TemplateInfo::kDoNotCache, data->serial_number());
 
   int serial_number = data->serial_number();

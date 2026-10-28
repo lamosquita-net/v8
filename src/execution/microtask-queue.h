@@ -8,7 +8,6 @@
 #include <stdint.h>
 
 #include <memory>
-#include <optional>
 #include <vector>
 
 #include "include/v8-internal.h"  // For Address.

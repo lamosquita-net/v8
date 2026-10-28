@@ -457,7 +457,6 @@ class Code : public ExposedTrustedObject {
       MarkedForDeoptimizationField::kShift;
   static const int kIsTurbofannedBit = IsTurbofannedField::kShift;
 
-  // Reserve one argument count value as the "don't adapt arguments" sentinel.
   static const int kArgumentsBits = 16;
   // Slightly less than 2^kArgumentBits-1 to allow for extra implicit arguments
   // on the call nodes without overflowing the uint16_t input_count.

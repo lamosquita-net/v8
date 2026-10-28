@@ -15,10 +15,10 @@
 
 namespace v8::internal {
 
-Handle<JSRegExpResultIndices> JSRegExpResultIndices::BuildIndices(
+DirectHandle<JSRegExpResultIndices> JSRegExpResultIndices::BuildIndices(
     Isolate* isolate, DirectHandle<RegExpMatchInfo> match_info,
     Handle<Object> maybe_names) {
-  Handle<JSRegExpResultIndices> indices(
+  DirectHandle<JSRegExpResultIndices> indices(
       Cast<JSRegExpResultIndices>(isolate->factory()->NewJSObjectFromMap(
           isolate->regexp_result_indices_map())));
 
@@ -163,9 +163,9 @@ MaybeHandle<JSRegExp> JSRegExp::New(Isolate* isolate, Handle<String> pattern,
 }
 
 // static
-MaybeHandle<JSRegExp> JSRegExp::Initialize(Handle<JSRegExp> regexp,
-                                           Handle<String> source,
-                                           Handle<String> flags_string) {
+MaybeDirectHandle<JSRegExp> JSRegExp::Initialize(Handle<JSRegExp> regexp,
+                                                 Handle<String> source,
+                                                 Handle<String> flags_string) {
   Isolate* isolate = regexp->GetIsolate();
   std::optional<Flags> flags = JSRegExp::FlagsFromString(isolate, flags_string);
   if (!flags.has_value() ||
@@ -247,8 +247,8 @@ void WriteStringToCharVector(base::Vector<Char> v, uint32_t* d,
 }
 
 template <typename Char, typename StringType>
-Handle<StringType> WriteEscapedRegExpSource(DirectHandle<String> source,
-                                            Handle<StringType> result) {
+DirectHandle<StringType> WriteEscapedRegExpSource(
+    DirectHandle<String> source, DirectHandle<StringType> result) {
   DisallowGarbageCollection no_gc;
   base::Vector<const Char> src = source->GetCharVector<Char>(no_gc);
   base::Vector<Char> dst(result->GetChars(no_gc), result->length());
@@ -300,11 +300,11 @@ Handle<StringType> WriteEscapedRegExpSource(DirectHandle<String> source,
   return result;
 }
 
-MaybeHandle<String> EscapeRegExpSource(Isolate* isolate,
-                                       Handle<String> source) {
+MaybeDirectHandle<String> EscapeRegExpSource(Isolate* isolate,
+                                             DirectHandle<String> source) {
   DCHECK(source->IsFlat());
   if (source->length() == 0) return isolate->factory()->query_colon_string();
-  bool one_byte = source->IsOneByteRepresentation();
+  bool one_byte = String::IsOneByteRepresentationUnderneath(*source);
   bool needs_escapes = false;
   uint32_t additional_escape_chars =
       one_byte ? CountAdditionalEscapeChars<uint8_t>(source, &needs_escapes)
@@ -314,12 +314,12 @@ MaybeHandle<String> EscapeRegExpSource(Isolate* isolate,
             std::numeric_limits<uint32_t>::max());
   uint32_t length = source->length() + additional_escape_chars;
   if (one_byte) {
-    Handle<SeqOneByteString> result;
+    DirectHandle<SeqOneByteString> result;
     ASSIGN_RETURN_ON_EXCEPTION(isolate, result,
                                isolate->factory()->NewRawOneByteString(length));
     return WriteEscapedRegExpSource<uint8_t>(source, result);
   } else {
-    Handle<SeqTwoByteString> result;
+    DirectHandle<SeqTwoByteString> result;
     ASSIGN_RETURN_ON_EXCEPTION(isolate, result,
                                isolate->factory()->NewRawTwoByteString(length));
     return WriteEscapedRegExpSource<base::uc16>(source, result);

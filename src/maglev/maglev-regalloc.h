@@ -210,8 +210,13 @@ class StraightForwardRegisterAllocator {
   void Spill(ValueNode* node);
   void SpillRegisters();
 
+  template <typename RegisterT, bool spill = false>
+  void ClearRegisters(RegisterFrameState<RegisterT>& registers);
   template <typename RegisterT>
-  void SpillAndClearRegisters(RegisterFrameState<RegisterT>& registers);
+  void SpillAndClearRegisters(RegisterFrameState<RegisterT>& registers) {
+    ClearRegisters<RegisterT, true>(registers);
+  }
+  void ClearRegisters();
   void SpillAndClearRegisters();
 
   void SaveRegisterSnapshot(NodeBase* node);
@@ -267,6 +272,9 @@ class StraightForwardRegisterAllocator {
   bool IsInRegister(MergePointRegisterState& target_state, ValueNode* incoming);
   bool IsForwardReachable(BasicBlock* start_block, NodeIdT first_id,
                           NodeIdT last_id);
+  bool AllUsedRegistersLiveAt(ConditionalControlNode* control_node,
+                              BasicBlock* target);
+  bool AllUsedRegistersLiveAt(BasicBlock* target);
 #endif
 
   template <typename RegisterT>

@@ -90,13 +90,6 @@ class StringShape {
     return that.type_ == this->type_;
   }
 
-  // Run different behavior for each concrete string class type, as defined by
-  // the dispatcher.
-  template <typename TDispatcher, typename TResult, typename... TArgs>
-  inline TResult DispatchToSpecificTypeWithoutCast(TArgs&&... args);
-  template <typename TDispatcher, typename TResult, typename... TArgs>
-  inline TResult DispatchToSpecificType(Tagged<String> str, TArgs&&... args);
-
  private:
   uint32_t type_;
 #ifdef DEBUG
@@ -239,9 +232,18 @@ V8_OBJECT class String : public Name {
   inline void set_length(uint32_t hash);
   inline void set_length(uint32_t hash, ReleaseStoreTag);
 
-  // Returns whether this string is stored with one-byte chars.
+  // Returns whether this string has only one-byte chars, i.e. all of them can
+  // be one-byte encoded.  This might be the case even if the string is
+  // two-byte.  Such strings may appear when the embedder prefers
+  // two-byte external representations even for one-byte data.
   inline bool IsOneByteRepresentation() const;
   inline bool IsTwoByteRepresentation() const;
+
+  // Cons and slices have an encoding flag that may not represent the actual
+  // encoding of the underlying string.  This is taken into account here.
+  // This function is static because that helps it get inlined.
+  // Requires: string.IsFlat()
+  static inline bool IsOneByteRepresentationUnderneath(Tagged<String> string);
 
   // Get and set individual two byte chars in the string.
   inline void Set(uint32_t index, uint16_t value);
@@ -375,7 +377,7 @@ V8_OBJECT class String : public Name {
   // the result.
   // A {start_index} can be passed to specify where to start scanning the
   // replacement string.
-  V8_WARN_UNUSED_RESULT static MaybeHandle<String> GetSubstitution(
+  V8_WARN_UNUSED_RESULT static MaybeDirectHandle<String> GetSubstitution(
       Isolate* isolate, Match* match, Handle<String> replacement,
       uint32_t start_index = 0);
 
@@ -390,7 +392,7 @@ V8_OBJECT class String : public Name {
   // whole string or just a prefix.
   //
   // The Isolate is passed as "evidence" that this call is on the main thread,
-  // and to distiguish from the LocalIsolate overload.
+  // and to distinguish from the LocalIsolate overload.
   template <EqualityType kEqType = EqualityType::kWholeString, typename Char>
   inline bool IsEqualTo(base::Vector<const Char> str, Isolate* isolate) const;
 
@@ -652,6 +654,28 @@ V8_OBJECT class String : public Name {
 
   static inline bool IsInPlaceInternalizableExcludingExternal(
       InstanceType instance_type);
+
+  // Run different behavior for each concrete string class type, to a
+  // dispatcher which is overloaded on that class.
+  template <typename TDispatcher>
+  V8_INLINE auto DispatchToSpecificType(TDispatcher&& dispatcher) const
+      // Help out the type deduction in case TDispatcher returns different
+      // types for different strings.
+      -> std::common_type_t<
+          decltype(dispatcher(Tagged<SeqOneByteString>{})),
+          decltype(dispatcher(Tagged<SeqTwoByteString>{})),
+          decltype(dispatcher(Tagged<ExternalOneByteString>{})),
+          decltype(dispatcher(Tagged<ExternalTwoByteString>{})),
+          decltype(dispatcher(Tagged<ThinString>{})),
+          decltype(dispatcher(Tagged<ConsString>{})),
+          decltype(dispatcher(Tagged<SlicedString>{}))>;
+
+  // Similar to the above, but using instance type. Since there is no
+  // string to cast, the dispatcher has static methods for handling
+  // each concrete type.
+  template <typename TDispatcher, typename... TArgs>
+  static inline auto DispatchToSpecificTypeWithoutCast(
+      InstanceType instance_type, TArgs&&... args);
 
  private:
   friend class Name;
@@ -1196,7 +1220,7 @@ V8_OBJECT class ExternalOneByteString : public ExternalString {
   inline const Resource* resource() const;
 
   // It is assumed that the previous resource is null. If it is not null, then
-  // it is the responsability of the caller the handle the previous resource.
+  // it is the responsibility of the caller the handle the previous resource.
   inline void SetResource(Isolate* isolate, const Resource* buffer);
 
   // Used only during serialization.
@@ -1234,7 +1258,7 @@ V8_OBJECT class ExternalTwoByteString : public ExternalString {
   inline const Resource* resource() const;
 
   // It is assumed that the previous resource is null. If it is not null, then
-  // it is the responsability of the caller the handle the previous resource.
+  // it is the responsibility of the caller the handle the previous resource.
   inline void SetResource(Isolate* isolate, const Resource* buffer);
 
   // Used only during serialization.

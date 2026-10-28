@@ -4,6 +4,7 @@
 
 #include "src/maglev/maglev-concurrent-dispatcher.h"
 
+#include "src/base/fpu.h"
 #include "src/codegen/compiler.h"
 #include "src/compiler/compilation-dependencies.h"
 #include "src/compiler/js-heap-broker.h"
@@ -267,6 +268,8 @@ class MaglevConcurrentDispatcher::JobTask final : public v8::JobTask {
       return;
     }
     TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.compile"), "V8.MaglevTask");
+    base::FlushDenormalsScope flush_denormals_scope(
+        isolate()->flush_denormals());
     LocalIsolate local_isolate(isolate(), ThreadKind::kBackground);
     DCHECK(local_isolate.heap()->IsParked());
 
@@ -286,6 +289,11 @@ class MaglevConcurrentDispatcher::JobTask final : public v8::JobTask {
         if (status == CompilationJob::SUCCEEDED) {
           outgoing_queue()->Enqueue(std::move(job));
           isolate()->stack_guard()->RequestInstallMaglevCode();
+        } else {
+          // FlyWeb: as upstream (v8 d6a92ca485's tree): a failed job owns
+          // persistent handles and strong roots, so it is destroyed unparked.
+          UnparkedScope unparked_scope(&local_isolate);
+          job.reset();
         }
       } else if (destruction_queue()->Dequeue(&job)) {
         // Maglev jobs aren't cheap to destruct, so destroy them here in the

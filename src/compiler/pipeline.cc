@@ -3896,7 +3896,7 @@ void Pipeline::AllocateRegistersForTesting(const RegisterConfiguration* config,
 
   // TODO(nicohartmann): Should migrate this to turboshaft::Pipeline eventually.
   PipelineImpl pipeline(&data);
-  pipeline.AllocateRegisters(config, nullptr, run_verifier);
+  CHECK(pipeline.AllocateRegisters(config, nullptr, run_verifier));
 }
 
 void PipelineImpl::ComputeScheduledGraph() {

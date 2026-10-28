@@ -30,7 +30,7 @@ void Pipeline::RecreateTurbofanGraph(compiler::TFPipelineData* turbofan_data,
   // Perform instruction selection and register allocation.
   PrepareForInstructionSelection(profile);
   CHECK(SelectInstructions(linkage));
-  CHECK(AllocateRegisters(linkage->GetIncomingDescriptor()));
+  if (!AllocateRegisters(linkage->GetIncomingDescriptor())) return false;
   AssembleCode(linkage);
 
   if (v8_flags.turbo_profiling) {

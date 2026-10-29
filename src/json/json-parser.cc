@@ -1494,20 +1494,20 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonObject(Handle<Map> feedback) {
                         property_stack_.size());
   bool first = true;
   do {
-    ExpectNext(
+    if (V8_UNLIKELY(!ExpectNext(
         JsonToken::STRING,
         first ? MessageTemplate::kJsonParseExpectedPropNameOrRBrace
-              : MessageTemplate::kJsonParseExpectedDoubleQuotedPropertyName);
+              : MessageTemplate::kJsonParseExpectedDoubleQuotedPropertyName))) return {};
     JsonString key = ScanJsonPropertyKey(&cont);
-    ExpectNext(JsonToken::COLON,
-               MessageTemplate::kJsonParseExpectedColonAfterPropertyName);
+    if (V8_UNLIKELY(!ExpectNext(JsonToken::COLON,
+               MessageTemplate::kJsonParseExpectedColonAfterPropertyName))) return {};
     Handle<Object> value;
     if (V8_UNLIKELY(!ParseJsonValueRecursive().ToHandle(&value))) return {};
     property_stack_.emplace_back(key, value);
     first = false;
   } while (Check(JsonToken::COMMA));
 
-  Expect(JsonToken::RBRACE, MessageTemplate::kJsonParseExpectedCommaOrRBrace);
+  if (V8_UNLIKELY(!Expect(JsonToken::RBRACE, MessageTemplate::kJsonParseExpectedCommaOrRBrace))) return {};
   Handle<Object> result = BuildJsonObject<false>(cont, feedback);
   property_stack_.resize_no_init(cont.index);
   return cont.scope.CloseAndEscape(result);
@@ -1553,8 +1553,8 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonArray() {
       SkipWhitespace();
       continue;
     } else {
-      Expect(JsonToken::RBRACK,
-             MessageTemplate::kJsonParseExpectedCommaOrRBrack);
+      if (V8_UNLIKELY(!Expect(JsonToken::RBRACK,
+             MessageTemplate::kJsonParseExpectedCommaOrRBrack))) return {};
       success = true;
       break;
     }
@@ -1622,7 +1622,7 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonArray() {
     element_stack_.emplace_back(value);
   }
 
-  Expect(JsonToken::RBRACK, MessageTemplate::kJsonParseExpectedCommaOrRBrack);
+  if (V8_UNLIKELY(!Expect(JsonToken::RBRACK, MessageTemplate::kJsonParseExpectedCommaOrRBrack))) return {};
   Handle<Object> result = BuildJsonArray(start);
   element_stack_.resize_no_init(start);
   return handle_scope.CloseAndEscape(result);
@@ -1732,15 +1732,15 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonValue() {
                                   property_stack_.size());
 
           // Parse the property key.
-          ExpectNext(JsonToken::STRING,
-                     MessageTemplate::kJsonParseExpectedPropNameOrRBrace);
+          if (V8_UNLIKELY(!ExpectNext(JsonToken::STRING,
+                     MessageTemplate::kJsonParseExpectedPropNameOrRBrace))) return {};
           property_stack_.emplace_back(ScanJsonPropertyKey(&cont));
           if constexpr (should_track_json_source) {
             property_val_node_stack.emplace_back(Handle<Object>());
           }
 
-          ExpectNext(JsonToken::COLON,
-                     MessageTemplate::kJsonParseExpectedColonAfterPropertyName);
+          if (V8_UNLIKELY(!ExpectNext(JsonToken::COLON,
+                     MessageTemplate::kJsonParseExpectedColonAfterPropertyName))) return {};
 
           // Continue to start producing the first property value.
           continue;
@@ -1836,17 +1836,17 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonValue() {
 
           if (V8_LIKELY(Check(JsonToken::COMMA))) {
             // Parse the property key.
-            ExpectNext(
+            if (V8_UNLIKELY(!ExpectNext(
                 JsonToken::STRING,
-                MessageTemplate::kJsonParseExpectedDoubleQuotedPropertyName);
+                MessageTemplate::kJsonParseExpectedDoubleQuotedPropertyName))) return {};
 
             property_stack_.emplace_back(ScanJsonPropertyKey(&cont));
             if constexpr (should_track_json_source) {
               property_val_node_stack.emplace_back(Handle<Object>());
             }
-            ExpectNext(
+            if (V8_UNLIKELY(!ExpectNext(
                 JsonToken::COLON,
-                MessageTemplate::kJsonParseExpectedColonAfterPropertyName);
+                MessageTemplate::kJsonParseExpectedColonAfterPropertyName))) return {};
 
             // Break to start producing the subsequent property value.
             break;
@@ -1866,8 +1866,8 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonValue() {
             }
           }
           value = BuildJsonObject<should_track_json_source>(cont, feedback);
-          Expect(JsonToken::RBRACE,
-                 MessageTemplate::kJsonParseExpectedCommaOrRBrace);
+          if (V8_UNLIKELY(!Expect(JsonToken::RBRACE,
+                 MessageTemplate::kJsonParseExpectedCommaOrRBrace))) return {};
           // Return the object.
           if constexpr (should_track_json_source) {
             size_t start = cont.index;
@@ -1917,8 +1917,8 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonValue() {
           if (V8_LIKELY(Check(JsonToken::COMMA))) break;
 
           value = BuildJsonArray(cont.index);
-          Expect(JsonToken::RBRACK,
-                 MessageTemplate::kJsonParseExpectedCommaOrRBrack);
+          if (V8_UNLIKELY(!Expect(JsonToken::RBRACK,
+                 MessageTemplate::kJsonParseExpectedCommaOrRBrack))) return {};
           // Return the array.
           if constexpr (should_track_json_source) {
             size_t start = cont.index;

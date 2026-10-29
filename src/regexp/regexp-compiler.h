@@ -308,6 +308,14 @@ class Trace {
   // done we can start a new trace or go to one that has already been
   // generated.
   void Flush(RegExpCompiler* compiler, RegExpNode* successor);
+  // Some callers add/subtract 1 from cp_offset, assuming that the result is
+  // still valid. That's obviously not the case when our `cp_offset` is only
+  // checked against kMinCPOffset/kMaxCPOffset, so we need to apply the some
+  // slack.
+  // TODO(jgruber): It would be better if all callers checked against limits
+  // themselves when doing so; but unfortunately not all callers have
+  // abort-compilation mechanisms.
+  static constexpr int kCPOffsetSlack = 1;
   int cp_offset() { return cp_offset_; }
   DeferredAction* actions() { return actions_; }
   // A trivial trace is one that has no deferred actions or other state that

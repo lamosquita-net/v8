@@ -627,6 +627,11 @@ bool RegExpImpl::CompileIrregexp(Isolate* isolate,
                                      compile_data.error));
     return false;
   }
+
+  // The capture_count cannot change in any valid scenario. Prevent corrupted
+  // pattern strings from generating invalid regexp code.
+  SBXCHECK_EQ(compile_data.capture_count, re_data->capture_count());
+
   // The compilation target is a kBytecode if we're interpreting all regexp
   // objects, or if we're using the tier-up strategy but the tier-up hasn't
   // happened yet. The compilation target is a kNative if we're using the

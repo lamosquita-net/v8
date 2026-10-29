@@ -1816,9 +1816,12 @@ class MaglevGraphBuilder {
     // TODO(leszeks): Track this on merge states / known node aspects, rather
     // than on the graph, so that it can survive control flow.
     if constexpr (is_possible_map_change) {
+      may_have_changed_maps_ = true;
       current_for_in_state.receiver_needs_map_check = true;
     }
   }
+
+  bool may_have_changed_maps() const { return may_have_changed_maps_; }
 
   int next_offset() const {
     return iterator_.current_offset() + iterator_.current_bytecode_size();
@@ -3132,6 +3135,9 @@ class MaglevGraphBuilder {
   };
   // TODO(leszeks): Allow having a stack of these.
   ForInState current_for_in_state = ForInState();
+  // FlyWeb (upstream dd7e9b5ef6): whether a possible map change was seen, so
+  // that inlining invalidates the caller's for-in receiver map check.
+  bool may_have_changed_maps_ = false;
 
   AllocationBlock* current_allocation_block_ = nullptr;
 

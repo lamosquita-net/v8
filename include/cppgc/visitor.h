@@ -198,8 +198,8 @@ class V8_EXPORT Visitor {
   template <typename K, typename V>
   void Trace(const EphemeronPair<K, V>& ephemeron_pair) {
     TraceEphemeron(ephemeron_pair.key, &ephemeron_pair.value);
-    RegisterWeakCallbackMethod<EphemeronPair<K, V>,
-                               &EphemeronPair<K, V>::ClearValueIfKeyIsDead>(
+    RegisterWeakCallbackMethod<
+        EphemeronPair<K, V>, &EphemeronPair<K, V>::ClearKeyAndValueIfKeyIsDead>(
         &ephemeron_pair);
   }
 

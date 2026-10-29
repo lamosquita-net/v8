@@ -614,6 +614,23 @@ Tagged<ScopeInfo> SharedFunctionInfo::GetOuterScopeInfo() const {
   return info->OuterScopeInfo();
 }
 
+Tagged<ScopeInfo> SharedFunctionInfo::TryGetOuterScopeInfo() const {
+  Tagged<Object> maybe_scope_info = name_or_scope_info(kAcquireLoad);
+  if (IsScopeInfo(maybe_scope_info)) {
+    Tagged<ScopeInfo> scope_info = Cast<ScopeInfo>(maybe_scope_info);
+    if (scope_info->HasOuterScopeInfo()) {
+      return scope_info->OuterScopeInfo();
+    }
+    return GetReadOnlyRoots().empty_scope_info();
+  }
+  Tagged<Object> maybe_outer_scope_info =
+      raw_outer_scope_info_or_feedback_metadata(kAcquireLoad);
+  if (IsScopeInfo(maybe_outer_scope_info)) {
+    return Cast<ScopeInfo>(maybe_outer_scope_info);
+  }
+  return GetReadOnlyRoots().empty_scope_info();
+}
+
 void SharedFunctionInfo::set_outer_scope_info(Tagged<HeapObject> value,
                                               WriteBarrierMode mode) {
   DCHECK(!is_compiled());

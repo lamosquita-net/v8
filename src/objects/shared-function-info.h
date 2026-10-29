@@ -286,6 +286,10 @@ class SharedFunctionInfo
   // Get the outer scope info whether this function is compiled or not.
   inline bool HasOuterScopeInfo() const;
   inline Tagged<ScopeInfo> GetOuterScopeInfo() const;
+  // FlyWeb (upstream 7fd662da8a): reads the outer ScopeInfo with one load of
+  // each field, for background threads racing with main-thread compilation.
+  // Returns the empty ScopeInfo if there is none.
+  inline Tagged<ScopeInfo> TryGetOuterScopeInfo() const;
 
   // [feedback metadata] Metadata template for feedback vectors of instances of
   // this function.

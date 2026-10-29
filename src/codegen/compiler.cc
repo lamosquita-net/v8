@@ -2092,13 +2092,15 @@ class ConstantPoolPointerForwarder {
     if (Is<SharedFunctionInfo>(info)) {
       Tagged<SharedFunctionInfo> old_sfi = Cast<SharedFunctionInfo>(info);
       // Also record context-having own scope infos for SFIs.
-      if (!old_sfi->scope_info()->IsEmpty() &&
-          old_sfi->scope_info()->HasContext()) {
-        scope_info = old_sfi->scope_info();
-      } else if (old_sfi->HasOuterScopeInfo()) {
-        scope_info = old_sfi->GetOuterScopeInfo();
+      // FlyWeb (upstream 81b2acf3bb): the function can be compiled racily on
+      // the main thread, so read each field only once (an empty result is ok,
+      // the foreground merge revisits it).
+      Tagged<ScopeInfo> own_scope_info = old_sfi->scope_info(kAcquireLoad);
+      if (!own_scope_info->IsEmpty() && own_scope_info->HasContext()) {
+        scope_info = own_scope_info;
       } else {
-        return;
+        scope_info = old_sfi->TryGetOuterScopeInfo();
+        if (scope_info->IsEmpty()) return;
       }
     } else {
       scope_info = Cast<ScopeInfo>(info);
@@ -2447,9 +2449,9 @@ void BackgroundMergeTask::BeginMergeInBackground(
           // Also push the old_sfi to make sure it stays alive / isn't replaced.
           new_compiled_data_for_cached_sfis_.push_back(
               {old_sfi_handle, local_heap->NewPersistentHandle(new_sfi)});
-          if (old_sfi->HasOuterScopeInfo()) {
-            new_sfi->scope_info()->set_outer_scope_info(
-                old_sfi->GetOuterScopeInfo());
+          Tagged<ScopeInfo> outer_info = old_sfi->TryGetOuterScopeInfo();
+          if (!outer_info->IsEmpty()) {
+            new_sfi->scope_info()->set_outer_scope_info(outer_info);
           }
           forwarder.AddBytecodeArray(new_sfi->GetBytecodeArray(isolate));
         }

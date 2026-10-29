@@ -23,6 +23,15 @@ struct EphemeronPair {
   void ClearValueIfKeyIsDead(const LivenessBroker& broker) {
     if (!broker.IsHeapObjectAlive(key)) value = nullptr;
   }
+
+  // FlyWeb (upstream 5a113ffdf2): also clear the dead key, so that no dangling
+  // pointer stays behind once the weak key is collected.
+  void ClearKeyAndValueIfKeyIsDead(const LivenessBroker& broker) {
+    if (!broker.IsHeapObjectAlive(key)) {
+      key = nullptr;
+      value = nullptr;
+    }
+  }
 };
 
 }  // namespace cppgc

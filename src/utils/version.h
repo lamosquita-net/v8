@@ -48,8 +48,10 @@ class V8_EXPORT Version {
   // the M132-LTS backports it lacks), 22 = engine level 134 (V8 13.4 with
   // the same backports and the Maglev debt of seg/maglev-134, whose
   // af7d1483a5 changes bytecode), 23 = engine level 135 (V8 13.5 with the
-  // same backports).
-  static constexpr int kFlyWebCacheEpoch = 23;
+  // same backports), 24 = seg/fs36-v8 (FS.36: post-135 merges, several of
+  // which change bytecode and parsing, e.g. hole check elision on break and
+  // continue, class member initializer reparse).
+  static constexpr int kFlyWebCacheEpoch = 24;
   static uint32_t Hash() {
     return static_cast<uint32_t>(base::hash_combine(
         major_, minor_, build_, patch_, kFlyWebCacheEpoch));

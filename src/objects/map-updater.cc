@@ -371,8 +371,16 @@ std::optional<Tagged<Map>> MapUpdater::TryUpdateNoLock(Isolate* isolate,
 
   if (v8_flags.move_prototype_transitions_first &&
       root_map->prototype() != old_map->prototype()) {
-    auto maybe_transition = TransitionsAccessor::GetPrototypeTransition(
-        isolate, root_map, old_map->prototype());
+    // FlyWeb: as upstream 5a4d7a78db, a concurrent reader must hold
+    // full_transition_array_access() (taken by PutPrototypeTransition while
+    // it compacts or publishes entries) while it reads the cache.
+    std::optional<Tagged<Map>> maybe_transition;
+    {
+      base::MutexGuardIf guard(isolate->full_transition_array_access(),
+                               IsConcurrent(cmode));
+      maybe_transition = TransitionsAccessor::GetPrototypeTransition(
+          isolate, root_map, old_map->prototype());
+    }
     if (!maybe_transition) {
       return {};
     }

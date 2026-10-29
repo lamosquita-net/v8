@@ -533,9 +533,7 @@ MaybeHandle<Map> Map::CopyWithField(Isolate* isolate, DirectHandle<Map> map,
 
   Descriptor d = Descriptor::DataField(name, index, attributes, constness,
                                        representation, wrapped_type);
-  Handle<Map> new_map = Map::CopyAddDescriptor(isolate, map, &d, flag);
-  new_map->AccountAddedPropertyField();
-  return new_map;
+  return Map::CopyAddDescriptor(isolate, map, &d, flag);
 }
 
 MaybeHandle<Map> Map::CopyWithConstant(Isolate* isolate, DirectHandle<Map> map,
@@ -640,20 +638,25 @@ Map::FieldCounts Map::GetFieldCounts() const {
 }
 
 void Map::DeprecateTransitionTree(Isolate* isolate) {
+  DCHECK(CanBeDeprecated());
+  return DeprecateTransitionTreeImpl(isolate);
+}
+
+void Map::DeprecateTransitionTreeImpl(Isolate* isolate) {
   if (is_deprecated()) return;
   DisallowGarbageCollection no_gc;
   ReadOnlyRoots roots(isolate);
   TransitionsAccessor transitions(isolate, *this);
   transitions.ForEachTransition(
-      &no_gc, [&](Tagged<Map> map) { map->DeprecateTransitionTree(isolate); },
+      &no_gc,
+      [&](Tagged<Map> map) { map->DeprecateTransitionTreeImpl(isolate); },
       [&](Tagged<Map> map) {
         if (v8_flags.move_prototype_transitions_first) {
-          map->DeprecateTransitionTree(isolate);
+          map->DeprecateTransitionTreeImpl(isolate);
         }
       },
       nullptr);
   DCHECK(!IsFunctionTemplateInfo(constructor_or_back_pointer()));
-  DCHECK(CanBeDeprecated());
   set_is_deprecated(true);
   if (v8_flags.log_maps) {
     LOG(isolate, MapEvent("Deprecate", direct_handle(*this, isolate), {}));
@@ -1299,8 +1302,10 @@ Handle<Map> Map::Normalize(Isolate* isolate, DirectHandle<Map> fast_map,
   }
   DirectHandle<NormalizedMapCache> cache;
   if (use_cache) {
+    Tagged<Object> maybe_native_context = meta_map->native_context_or_null();
+    DCHECK(!IsNull(maybe_native_context));
     Tagged<Object> normalized_map_cache =
-        meta_map->native_context()->normalized_map_cache();
+        Cast<NativeContext>(maybe_native_context)->normalized_map_cache();
     use_cache = !IsUndefined(normalized_map_cache, isolate);
     if (use_cache) {
       cache = Cast<NormalizedMapCache>(
@@ -1530,6 +1535,10 @@ Handle<Map> Map::ShareDescriptor(Isolate* isolate, DirectHandle<Map> map,
     DisallowGarbageCollection no_gc;
     descriptors->Append(descriptor);
     result->InitializeDescriptors(isolate, *descriptors);
+    // Account for the field before publishing the transition.
+    if (descriptor->GetDetails().location() == PropertyLocation::kField) {
+      result->AccountAddedPropertyField();
+    }
   }
 
   DCHECK(result->NumberOfOwnDescriptors() == map->NumberOfOwnDescriptors() + 1);
@@ -1573,6 +1582,22 @@ Handle<Map> Map::CopyReplaceDescriptors(
     DirectHandle<DescriptorArray> descriptors, TransitionFlag flag,
     MaybeDirectHandle<Name> maybe_name, const char* reason,
     TransitionKindFlag transition_kind) {
+  // Special transitions need to pass an InitMap function to initialize the map
+  // before inserting it into the transition tree.
+  CHECK_IMPLIES(flag == INSERT_TRANSITION,
+                transition_kind == PROPERTY_TRANSITION ||
+                    transition_kind == SIMPLE_PROPERTY_TRANSITION);
+  return CopyReplaceDescriptors(
+      isolate, map, descriptors, flag, [&](Handle<Map>) {}, maybe_name, reason,
+      transition_kind);
+}
+
+template <typename InitMapCb>
+Handle<Map> Map::CopyReplaceDescriptors(
+    Isolate* isolate, DirectHandle<Map> map,
+    DirectHandle<DescriptorArray> descriptors, TransitionFlag flag,
+    const InitMapCb& InitMap, MaybeDirectHandle<Name> maybe_name,
+    const char* reason, TransitionKindFlag transition_kind) {
   DCHECK(descriptors->IsSortedNoDuplicates());
 
   Handle<Map> result = CopyDropDescriptors(isolate, map);
@@ -1584,15 +1609,16 @@ Handle<Map> Map::CopyReplaceDescriptors(
     result->set_may_have_interesting_properties(true);
   }
 
+  bool insert_transition = false;
   if (map->is_prototype_map()) {
     result->InitializeDescriptors(isolate, *descriptors);
   } else {
     if (flag == INSERT_TRANSITION &&
         TransitionsAccessor::CanHaveMoreTransitions(isolate, map)) {
+      insert_transition = true;
       result->InitializeDescriptors(isolate, *descriptors);
 
       DCHECK(!maybe_name.is_null());
-      ConnectTransition(isolate, map, result, name, transition_kind);
       is_connected = true;
     } else if ((transition_kind == PROTOTYPE_TRANSITION &&
                 v8_flags.move_prototype_transitions_first) ||
@@ -1609,6 +1635,10 @@ Handle<Map> Map::CopyReplaceDescriptors(
       descriptors->GeneralizeAllFields(transition_kind == PROTOTYPE_TRANSITION);
       result->InitializeDescriptors(isolate, *descriptors);
     }
+  }
+  InitMap(result);
+  if (insert_transition) {
+    ConnectTransition(isolate, map, result, name, transition_kind);
   }
   if (v8_flags.log_maps && !is_connected) {
     LOG(isolate,
@@ -1865,68 +1895,70 @@ Handle<Map> Map::CopyForPreventExtensions(
       DescriptorArray::CopyUpToAddAttributes(
           isolate, direct_handle(map->instance_descriptors(isolate), isolate),
           num_descriptors, attrs_to_add);
+
+  auto InitMap = [&](Handle<Map> new_map) {
+    new_map->set_is_extensible(false);
+    if (!IsTypedArrayOrRabGsabTypedArrayElementsKind(map->elements_kind())) {
+      ElementsKind new_kind = IsStringWrapperElementsKind(map->elements_kind())
+                                  ? SLOW_STRING_WRAPPER_ELEMENTS
+                                  : DICTIONARY_ELEMENTS;
+      if (!old_map_is_dictionary_elements_kind) {
+        switch (map->elements_kind()) {
+          case PACKED_ELEMENTS:
+            if (attrs_to_add == SEALED) {
+              new_kind = PACKED_SEALED_ELEMENTS;
+            } else if (attrs_to_add == FROZEN) {
+              new_kind = PACKED_FROZEN_ELEMENTS;
+            } else {
+              new_kind = PACKED_NONEXTENSIBLE_ELEMENTS;
+            }
+            break;
+          case PACKED_NONEXTENSIBLE_ELEMENTS:
+            if (attrs_to_add == SEALED) {
+              new_kind = PACKED_SEALED_ELEMENTS;
+            } else if (attrs_to_add == FROZEN) {
+              new_kind = PACKED_FROZEN_ELEMENTS;
+            }
+            break;
+          case PACKED_SEALED_ELEMENTS:
+            if (attrs_to_add == FROZEN) {
+              new_kind = PACKED_FROZEN_ELEMENTS;
+            }
+            break;
+          case HOLEY_ELEMENTS:
+            if (attrs_to_add == SEALED) {
+              new_kind = HOLEY_SEALED_ELEMENTS;
+            } else if (attrs_to_add == FROZEN) {
+              new_kind = HOLEY_FROZEN_ELEMENTS;
+            } else {
+              new_kind = HOLEY_NONEXTENSIBLE_ELEMENTS;
+            }
+            break;
+          case HOLEY_NONEXTENSIBLE_ELEMENTS:
+            if (attrs_to_add == SEALED) {
+              new_kind = HOLEY_SEALED_ELEMENTS;
+            } else if (attrs_to_add == FROZEN) {
+              new_kind = HOLEY_FROZEN_ELEMENTS;
+            }
+            break;
+          case HOLEY_SEALED_ELEMENTS:
+            if (attrs_to_add == FROZEN) {
+              new_kind = HOLEY_FROZEN_ELEMENTS;
+            }
+            break;
+          default:
+            break;
+        }
+      }
+      new_map->set_elements_kind(new_kind);
+    }
+  };
+
   // Do not track transitions during bootstrapping.
   TransitionFlag flag =
       isolate->bootstrapper()->IsActive() ? OMIT_TRANSITION : INSERT_TRANSITION;
-  Handle<Map> new_map =
-      CopyReplaceDescriptors(isolate, map, new_desc, flag, transition_marker,
-                             reason, SPECIAL_TRANSITION);
-  new_map->set_is_extensible(false);
-  if (!IsTypedArrayOrRabGsabTypedArrayElementsKind(map->elements_kind())) {
-    ElementsKind new_kind = IsStringWrapperElementsKind(map->elements_kind())
-                                ? SLOW_STRING_WRAPPER_ELEMENTS
-                                : DICTIONARY_ELEMENTS;
-    if (!old_map_is_dictionary_elements_kind) {
-      switch (map->elements_kind()) {
-        case PACKED_ELEMENTS:
-          if (attrs_to_add == SEALED) {
-            new_kind = PACKED_SEALED_ELEMENTS;
-          } else if (attrs_to_add == FROZEN) {
-            new_kind = PACKED_FROZEN_ELEMENTS;
-          } else {
-            new_kind = PACKED_NONEXTENSIBLE_ELEMENTS;
-          }
-          break;
-        case PACKED_NONEXTENSIBLE_ELEMENTS:
-          if (attrs_to_add == SEALED) {
-            new_kind = PACKED_SEALED_ELEMENTS;
-          } else if (attrs_to_add == FROZEN) {
-            new_kind = PACKED_FROZEN_ELEMENTS;
-          }
-          break;
-        case PACKED_SEALED_ELEMENTS:
-          if (attrs_to_add == FROZEN) {
-            new_kind = PACKED_FROZEN_ELEMENTS;
-          }
-          break;
-        case HOLEY_ELEMENTS:
-          if (attrs_to_add == SEALED) {
-            new_kind = HOLEY_SEALED_ELEMENTS;
-          } else if (attrs_to_add == FROZEN) {
-            new_kind = HOLEY_FROZEN_ELEMENTS;
-          } else {
-            new_kind = HOLEY_NONEXTENSIBLE_ELEMENTS;
-          }
-          break;
-        case HOLEY_NONEXTENSIBLE_ELEMENTS:
-          if (attrs_to_add == SEALED) {
-            new_kind = HOLEY_SEALED_ELEMENTS;
-          } else if (attrs_to_add == FROZEN) {
-            new_kind = HOLEY_FROZEN_ELEMENTS;
-          }
-          break;
-        case HOLEY_SEALED_ELEMENTS:
-          if (attrs_to_add == FROZEN) {
-            new_kind = HOLEY_FROZEN_ELEMENTS;
-          }
-          break;
-        default:
-          break;
-      }
-    }
-    new_map->set_elements_kind(new_kind);
-  }
-  return new_map;
+  return CopyReplaceDescriptors(isolate, map, new_desc, flag, InitMap,
+                                transition_marker, reason, SPECIAL_TRANSITION);
 }
 
 namespace {
@@ -2206,7 +2238,12 @@ Handle<Map> Map::CopyAddDescriptor(Isolate* isolate, DirectHandle<Map> map,
       DescriptorArray::CopyUpTo(isolate, descriptors, nof, 1);
   new_descriptors->Append(descriptor);
 
-  return CopyReplaceDescriptors(isolate, map, new_descriptors, flag,
+  auto InitMap = [&](DirectHandle<Map> new_map) {
+    if (descriptor->GetDetails().location() == PropertyLocation::kField) {
+      new_map->AccountAddedPropertyField();
+    }
+  };
+  return CopyReplaceDescriptors(isolate, map, new_descriptors, flag, InitMap,
                                 descriptor->GetKey(), "CopyAddDescriptor",
                                 SIMPLE_PROPERTY_TRANSITION);
 }

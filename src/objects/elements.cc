@@ -1264,14 +1264,19 @@ class ElementsAccessorBase : public InternalElementsAccessor {
   static Handle<FixedArray> DirectCollectElementIndicesImpl(
       Isolate* isolate, DirectHandle<JSObject> object,
       DirectHandle<FixedArrayBase> backing_store, GetKeysConversion convert,
-      PropertyFilter filter, Handle<FixedArray> list, uint32_t* nof_indices,
-      uint32_t insertion_index = 0) {
+      PropertyFilter filter, Handle<FixedArray> list, uint32_t max_nof_indices,
+      uint32_t* nof_indices, uint32_t insertion_index = 0) {
     size_t length = Subclass::GetMaxIndex(*object, *backing_store);
     uint32_t const kMaxStringTableEntries =
         isolate->heap()->MaxNumberToStringCacheSize();
     for (size_t i = 0; i < length; i++) {
       if (Subclass::HasElementImpl(isolate, *object, i, *backing_store,
                                    filter)) {
+        if (insertion_index >= max_nof_indices) {
+          // This might happen when the object is a TypedArray which was grown
+          // by a background thread.
+          break;
+        }
         if (convert == GetKeysConversion::kConvertToString) {
           bool use_cache = i < kMaxStringTableEntries;
           DirectHandle<String> index_string =
@@ -1286,6 +1291,7 @@ class ElementsAccessorBase : public InternalElementsAccessor {
       }
     }
     *nof_indices = insertion_index;
+    CHECK_LE(*nof_indices, max_nof_indices);
     return list;
   }
 
@@ -1302,14 +1308,15 @@ class ElementsAccessorBase : public InternalElementsAccessor {
       DirectHandle<FixedArrayBase> backing_store, DirectHandle<FixedArray> keys,
       GetKeysConversion convert, PropertyFilter filter) {
     uint32_t nof_property_keys = keys->length();
-    size_t initial_list_length =
+    size_t nof_elements_szt =
         Subclass::GetMaxNumberOfEntries(isolate, *object, *backing_store);
 
-    if (initial_list_length > FixedArray::kMaxLength - nof_property_keys) {
+    if (nof_elements_szt > FixedArray::kMaxLength - nof_property_keys) {
       THROW_NEW_ERROR(isolate,
                       NewRangeError(MessageTemplate::kInvalidArrayLength));
     }
-    initial_list_length += nof_property_keys;
+    uint32_t nof_elements = static_cast<uint32_t>(nof_elements_szt);
+    size_t initial_list_length = nof_elements + nof_property_keys;
 
     // Collect the element indices into a new list.
     DCHECK_LE(initial_list_length, std::numeric_limits<int>::max());
@@ -1326,9 +1333,9 @@ class ElementsAccessorBase : public InternalElementsAccessor {
         // large-object space which doesn't free memory on shrinking the list.
         // Hence we try to estimate the final size for holey backing stores more
         // precisely here.
-        initial_list_length =
+        nof_elements =
             Subclass::NumberOfElementsImpl(isolate, *object, *backing_store);
-        initial_list_length += nof_property_keys;
+        initial_list_length = nof_elements + nof_property_keys;
       }
       DCHECK_LE(initial_list_length, std::numeric_limits<int>::max());
       combined_keys = isolate->factory()->NewFixedArray(
@@ -1341,7 +1348,7 @@ class ElementsAccessorBase : public InternalElementsAccessor {
     combined_keys = Subclass::DirectCollectElementIndicesImpl(
         isolate, object, backing_store,
         needs_sorting ? GetKeysConversion::kKeepNumbers : convert, filter,
-        combined_keys, &nof_indices);
+        combined_keys, nof_elements, &nof_indices);
 
     if (needs_sorting) {
       SortIndices(isolate, combined_keys, nof_indices);
@@ -1796,8 +1803,8 @@ class DictionaryElementsAccessor
   static Handle<FixedArray> DirectCollectElementIndicesImpl(
       Isolate* isolate, DirectHandle<JSObject> object,
       DirectHandle<FixedArrayBase> backing_store, GetKeysConversion convert,
-      PropertyFilter filter, Handle<FixedArray> list, uint32_t* nof_indices,
-      uint32_t insertion_index = 0) {
+      PropertyFilter filter, Handle<FixedArray> list, uint32_t max_nof_indices,
+      uint32_t* nof_indices, uint32_t insertion_index = 0) {
     if (filter & SKIP_STRINGS) return list;
 
     auto dictionary = Cast<NumberDictionary>(backing_store);
@@ -1809,6 +1816,7 @@ class DictionaryElementsAccessor
       insertion_index++;
     }
     *nof_indices = insertion_index;
+    CHECK_LE(*nof_indices, max_nof_indices);
     return list;
   }
 
@@ -3903,6 +3911,22 @@ class TypedElementsAccessor
                                                           is_shared);
   }
 
+  // FlyWeb (upstream 0197c35257): the external array type and the element size
+  // of a typed array derived from a single read of its elements kind.
+  static constexpr std::pair<ExternalArrayType, size_t> TypeAndElementSizeFor(
+      ElementsKind kind) {
+    switch (kind) {
+#define TYPED_ARRAY_CASE(Type, type, TYPE, ctype) \
+  case TYPE##_ELEMENTS:                           \
+    return {kExternal##Type##Array, sizeof(ctype)};
+      TYPED_ARRAYS(TYPED_ARRAY_CASE)
+      RAB_GSAB_TYPED_ARRAYS_WITH_TYPED_ARRAY_TYPE(TYPED_ARRAY_CASE)
+#undef TYPED_ARRAY_CASE
+      default:
+        UNREACHABLE();
+    }
+  }
+
   static void CopyElementsFromTypedArray(Tagged<JSTypedArray> source,
                                          Tagged<JSTypedArray> destination,
                                          size_t length, size_t offset) {
@@ -3917,18 +3941,29 @@ class TypedElementsAccessor
     DCHECK_LE(length, destination->GetLength() - offset);
     DCHECK_LE(length, source->GetLength());
 
-    ExternalArrayType source_type = source->type();
-    ExternalArrayType destination_type = destination->type();
+    // Read the source elements kind only once, and only use the given length
+    // (no re-reads of the lengths or kinds).
+    ElementsKind source_kind = source->GetElementsKind();
+    // Make sure that we are in the right specialization for this destination.
+    DCHECK_EQ(Kind, destination->GetElementsKind());
+    const std::pair<ExternalArrayType, size_t> source_type_and_size =
+        TypeAndElementSizeFor(source_kind);
+    const std::pair<ExternalArrayType, size_t> destination_type_and_size =
+        TypeAndElementSizeFor(Kind);
+    ExternalArrayType source_type = source_type_and_size.first;
+    ExternalArrayType destination_type = destination_type_and_size.first;
+    size_t source_size = source_type_and_size.second;
+    size_t destination_size = destination_type_and_size.second;
+    DCHECK_EQ(sizeof(ElementType), destination_size);
 
     bool same_type = source_type == destination_type;
-    bool same_size = source->element_size() == destination->element_size();
+    bool same_size = source_size == destination_size;
     bool both_are_simple = HasSimpleRepresentation(source_type) &&
                            HasSimpleRepresentation(destination_type);
 
     uint8_t* source_data = static_cast<uint8_t*>(source->DataPtr());
-    uint8_t* dest_data = static_cast<uint8_t*>(destination->DataPtr());
-    size_t source_byte_length = source->GetByteLength();
-    size_t dest_byte_length = destination->GetByteLength();
+    uint8_t* dest_data = static_cast<uint8_t*>(destination->DataPtr()) +
+                         offset * destination_size;
 
     bool source_shared = source->buffer()->is_shared();
     bool destination_shared = destination->buffer()->is_shared();
@@ -3938,18 +3973,17 @@ class TypedElementsAccessor
     // will be the same. This is not the case for floats or clamped Uint8,
     // which have special conversion operations.
     if (same_type || (same_size && both_are_simple)) {
-      size_t element_size = source->element_size();
       if (source_shared || destination_shared) {
-        base::Relaxed_Memcpy(
-            reinterpret_cast<base::Atomic8*>(dest_data + offset * element_size),
-            reinterpret_cast<base::Atomic8*>(source_data),
-            length * element_size);
+        base::Relaxed_Memcpy(reinterpret_cast<base::Atomic8*>(dest_data),
+                             reinterpret_cast<base::Atomic8*>(source_data),
+                             length * source_size);
       } else {
-        std::memmove(dest_data + offset * element_size, source_data,
-                     length * element_size);
+        std::memmove(dest_data, source_data, length * source_size);
       }
     } else {
       std::unique_ptr<uint8_t[]> cloned_source_elements;
+      size_t source_byte_length = length * source_size;
+      size_t dest_byte_length = length * destination_size;
 
       // If the typedarrays are overlapped, clone the source.
       if (dest_data + dest_byte_length > source_data &&
@@ -3967,12 +4001,12 @@ class TypedElementsAccessor
         source_data = cloned_source_elements.get();
       }
 
-      switch (source->GetElementsKind()) {
+      switch (source_kind) {
 #define TYPED_ARRAY_CASE(Type, type, TYPE, ctype)                   \
   case TYPE##_ELEMENTS:                                             \
     CopyBetweenBackingStores<TYPE##_ELEMENTS, ctype>(               \
         reinterpret_cast<ctype*>(source_data),                      \
-        reinterpret_cast<ElementType*>(dest_data) + offset, length, \
+        reinterpret_cast<ElementType*>(dest_data), length,          \
         source_shared || destination_shared ? kShared : kUnshared); \
     break;
         TYPED_ARRAYS(TYPED_ARRAY_CASE)
@@ -4991,12 +5025,13 @@ class SloppyArgumentsElementsAccessor
       DirectHandle<JSObject> object, DirectHandle<FixedArrayBase> backing_store,
       KeyAccumulator* keys) {
     Isolate* isolate = keys->isolate();
+    uint32_t max_nof_indices = GetCapacityImpl(*object, *backing_store);
     uint32_t nof_indices = 0;
-    Handle<FixedArray> indices = isolate->factory()->NewFixedArray(
-        GetCapacityImpl(*object, *backing_store));
-    DirectCollectElementIndicesImpl(isolate, object, backing_store,
-                                    GetKeysConversion::kKeepNumbers,
-                                    ENUMERABLE_STRINGS, indices, &nof_indices);
+    Handle<FixedArray> indices =
+        isolate->factory()->NewFixedArray(max_nof_indices);
+    DirectCollectElementIndicesImpl(
+        isolate, object, backing_store, GetKeysConversion::kKeepNumbers,
+        ENUMERABLE_STRINGS, indices, max_nof_indices, &nof_indices);
     SortIndices(isolate, indices, nof_indices);
     for (uint32_t i = 0; i < nof_indices; i++) {
       RETURN_FAILURE_IF_NOT_SUCCESSFUL(keys->AddKey(indices->get(i)));
@@ -5007,8 +5042,8 @@ class SloppyArgumentsElementsAccessor
   static Handle<FixedArray> DirectCollectElementIndicesImpl(
       Isolate* isolate, DirectHandle<JSObject> object,
       DirectHandle<FixedArrayBase> backing_store, GetKeysConversion convert,
-      PropertyFilter filter, Handle<FixedArray> list, uint32_t* nof_indices,
-      uint32_t insertion_index = 0) {
+      PropertyFilter filter, Handle<FixedArray> list, uint32_t max_nof_indices,
+      uint32_t* nof_indices, uint32_t insertion_index = 0) {
     auto elements = Cast<SloppyArgumentsElements>(backing_store);
     uint32_t length = elements->length();
 
@@ -5027,8 +5062,8 @@ class SloppyArgumentsElementsAccessor
 
     DirectHandle<FixedArray> store(elements->arguments(), isolate);
     return ArgumentsAccessor::DirectCollectElementIndicesImpl(
-        isolate, object, store, convert, filter, list, nof_indices,
-        insertion_index);
+        isolate, object, store, convert, filter, list, max_nof_indices,
+        nof_indices, insertion_index);
   }
 
   static Maybe<bool> IncludesValueImpl(Isolate* isolate,

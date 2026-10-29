@@ -345,8 +345,9 @@ Node* JSInliningHeuristic::DuplicateStateValuesAndRename(Node* state_values,
                                                          StateCloneMode mode) {
   // Only rename in states that are not shared with other users. This needs to
   // be in sync with the condition in {CollectStateValuesOwnedUses}.
-  if (state_values->UseCount() > 1) return state_values;
-  Node* copy = mode == kChangeInPlace ? state_values : nullptr;
+  Node* copy = (mode == kChangeInPlace && state_values->UseCount() <= 1)
+                   ? state_values
+                   : nullptr;
   for (int i = 0; i < state_values->InputCount(); i++) {
     Node* input = state_values->InputAt(i);
     Node* processed;
@@ -722,6 +723,28 @@ Reduction JSInliningHeuristic::InlineCandidate(Candidate const& candidate,
   Node* calls[kMaxCallPolymorphism + 1];
   Node* if_successes[kMaxCallPolymorphism];
   Node* callee = NodeProperties::GetValueInput(node, 0);
+
+  {
+    // Re-collect functions from the live node to check for mutations. This
+    // should be rare, but can still happen if the callee has been mutated
+    // in-place following another inlining.
+    Candidate current_candidate = CollectFunctions(node, kMaxCallPolymorphism);
+
+    if (current_candidate.num_functions != candidate.num_functions) {
+      // Transitioned from Phi to non-phi or vice versa, or a phi changed input
+      // count.
+      // TODO(dmercadier): transitioning from Phi to non-phi is actually
+      // something for which we should probably still inline.. Maybe we could
+      // re-queue the candidate or something like that.
+      return NoChange();
+    }
+    for (int i = 0; i < candidate.num_functions; ++i) {
+      if (current_candidate.functions[i] != candidate.functions[i]) {
+        // A phi input changed.
+        return NoChange();
+      }
+    }
+  }
 
   // Setup the inputs for the cloned call nodes.
   int const input_count = node->InputCount();

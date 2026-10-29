@@ -1228,6 +1228,13 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
     return class_scope_has_private_brand_;
   }
 
+  bool class_initializer_allows_await() const {
+    return class_initializer_allows_await_;
+  }
+  void set_class_initializer_allows_await(bool value) {
+    class_initializer_allows_await_ = value;
+  }
+
  private:
   V8_INLINE void AllocateParameter(Variable* var, int index);
 
@@ -1276,6 +1283,7 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
   bool has_this_declaration_ : 1;
   bool needs_private_name_context_chain_recalc_ : 1;
   bool class_scope_has_private_brand_ : 1;
+  bool class_initializer_allows_await_ : 1;
   // If the scope is a function scope, this is the function kind.
   FunctionKind function_kind_;
 

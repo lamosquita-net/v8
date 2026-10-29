@@ -570,6 +570,11 @@ void SharedFunctionInfo::InitFromFunctionLiteral(IsolateT* isolate,
     raw_sfi->set_has_static_private_methods_or_accessors(
         lit->has_static_private_methods_or_accessors());
 
+    DCHECK_IMPLIES(lit->scope()->class_initializer_allows_await(),
+                   IsClassMembersInitializerFunction(lit->kind()));
+    raw_sfi->set_class_initializer_allows_await(
+        lit->scope()->class_initializer_allows_await());
+
     raw_sfi->set_is_toplevel(is_toplevel);
     DCHECK(IsTheHole(raw_sfi->outer_scope_info()));
     Scope* outer_scope = lit->scope()->GetOuterScopeWithContext();

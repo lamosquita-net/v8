@@ -39,6 +39,7 @@ bitfield struct SharedFunctionInfoFlags extends uint32 {
   is_top_level: bool: 1 bit;
   properties_are_final: bool: 1 bit;
   private_name_lookup_skips_outer_class: bool: 1 bit;
+  class_initializer_allows_await: bool: 1 bit;
 }
 
 bitfield struct SharedFunctionInfoFlags2 extends uint8 {

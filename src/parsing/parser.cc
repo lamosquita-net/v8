@@ -583,7 +583,10 @@ Parser::Parser(LocalIsolate* local_isolate, ParseInfo* info)
       total_preparse_skipped_(0),
       consumed_preparse_data_(info->consumed_preparse_data()),
       preparse_data_buffer_(),
-      parameters_end_pos_(info->parameters_end_pos()) {
+      parameters_end_pos_(info->parameters_end_pos()),
+      parsing_dynamic_function_declaration_(
+          info->parameters_end_pos() != kNoSourcePosition ||
+          info->flags().parse_restriction() == ONLY_SINGLE_FUNCTION_LITERAL) {
   // Even though we were passed ParseInfo, we should not store it in
   // Parser - this makes sure that Isolate is not accidentally accessed via
   // ParseInfo during background parsing.
@@ -1167,10 +1170,19 @@ FunctionLiteral* Parser::ParseClassForMemberInitialization(
   // this point the scanner should be rewound to the position of the class
   // token.
   DCHECK_EQ(peek_position(), initializer_pos);
-  // Insert a FunctionState with the closest outer Declaration scope
+  // Insert a FunctionState with the closest outer Declaration scope.
+  // The immediate enclosing function scope may have been elided from the
+  // ScopeInfo chain if it did not allocate a context. Since class bodies are
+  // always strict mode, 'yield' is never a valid identifier in computed
+  // property names, so we can unconditionally enable generator mode; whether
+  // 'await' is a keyword is recorded on the initializer SharedFunctionInfo.
   DeclarationScope* nearest_decl_scope = original_scope_->GetDeclarationScope();
   DCHECK_NOT_NULL(nearest_decl_scope);
-  FunctionState function_state(&function_state_, &scope_, nearest_decl_scope);
+  FunctionKind enclosing_kind = flags().class_initializer_allows_await()
+                                    ? FunctionKind::kAsyncGeneratorFunction
+                                    : FunctionKind::kGeneratorFunction;
+  FunctionState function_state(&function_state_, &scope_, nearest_decl_scope,
+                               enclosing_kind);
 
   // We will reindex the function literals later.
   ResetInfoId();
@@ -2595,26 +2607,33 @@ void Parser::DeclareArrowFunctionFormalParameters(
 }
 
 void Parser::ReindexArrowFunctionFormalParameters(
-    ParserFormalParameters* parameters) {
+    ParserFormalParameters* parameters, const AllowReindexScope& scope) {
   // Make space for the arrow function above the formal parameters.
   AstFunctionLiteralIdReindexer reindexer(stack_limit_, 1);
   for (auto p : parameters->params) {
-    if (p->pattern != nullptr) reindexer.Reindex(p->pattern);
+    if (p->pattern != nullptr) reindexer.Reindex(p->pattern, scope);
     if (p->initializer() != nullptr) {
-      reindexer.Reindex(p->initializer());
+      reindexer.Reindex(p->initializer(), scope);
     }
     if (reindexer.HasStackOverflow()) {
+      reindexer.ClearStackOverflow();
       set_stack_overflow();
       return;
     }
   }
 }
 
-void Parser::ReindexComputedMemberName(Expression* computed_name) {
+void Parser::ReindexComputedMemberName(Expression* computed_name,
+                                       const AllowReindexScope& scope) {
   // Make space for the member initializer function above the computed property
   // name.
   AstFunctionLiteralIdReindexer reindexer(stack_limit_, 1);
-  reindexer.Reindex(computed_name);
+  reindexer.Reindex(computed_name, scope);
+  if (reindexer.HasStackOverflow()) {
+    reindexer.ClearStackOverflow();
+    set_stack_overflow();
+    return;
+  }
 }
 
 void Parser::PrepareGeneratorVariables() {
@@ -2911,6 +2930,7 @@ bool Parser::SkipFunction(const AstRawString* function_name, FunctionKind kind,
   // AST. This gathers the data needed to build a lazy function.
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.compile"), "V8.PreParse");
 
+  reusable_preparser()->set_max_drift(this->max_drift());
   PreParser::PreParseResult result = reusable_preparser()->PreParseFunction(
       function_name, kind, function_syntax_kind, function_scope, use_counts_,
       produced_preparse_data);
@@ -3018,9 +3038,10 @@ void Parser::ParseFunction(
   bool is_wrapped = function_syntax_kind == FunctionSyntaxKind::kWrapped;
 
   int expected_parameters_end_pos = parameters_end_pos_;
-  if (expected_parameters_end_pos != kNoSourcePosition) {
+  if (parsing_dynamic_function_declaration_) {
     // This is the first function encountered in a CreateDynamicFunction eval.
     parameters_end_pos_ = kNoSourcePosition;
+    parsing_dynamic_function_declaration_ = false;
     // The function name should have been ignored, giving us the empty string
     // here.
     DCHECK_EQ(function_name, ast_value_factory()->empty_string());

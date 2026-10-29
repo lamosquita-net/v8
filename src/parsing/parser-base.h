@@ -446,7 +446,11 @@ class ParserBase {
   class FunctionState final : public BlockState {
    public:
     FunctionState(FunctionState** function_state_stack, Scope** scope_stack,
-                  DeclarationScope* scope);
+                  DeclarationScope* scope)
+        : FunctionState(function_state_stack, scope_stack, scope,
+                        scope->function_kind()) {}
+    FunctionState(FunctionState** function_state_stack, Scope** scope_stack,
+                  DeclarationScope* scope, FunctionKind kind);
     ~FunctionState();
 
     DeclarationScope* scope() const { return scope_->AsDeclarationScope(); }
@@ -463,7 +467,7 @@ class ParserBase {
     int suspend_count() const { return suspend_count_; }
     bool CanSuspend() const { return suspend_count_ > 0; }
 
-    FunctionKind kind() const { return scope()->function_kind(); }
+    FunctionKind kind() const { return kind_; }
 
     bool next_function_is_likely_called() const {
       return next_function_is_likely_called_;
@@ -530,6 +534,7 @@ class ParserBase {
     FunctionState** function_state_stack_;
     FunctionState* outer_function_state_;
     DeclarationScope* scope_;
+    FunctionKind kind_;
     Target* target_stack_ = nullptr;  // for break, continue statements
 
     // A reason, if any, why this function should not be optimized.
@@ -632,6 +637,8 @@ class ParserBase {
             FunctionKind::kClassStaticInitializerFunction);
         static_elements_scope->SetLanguageMode(LanguageMode::kStrict);
         static_elements_scope->set_start_position(beg_pos);
+        static_elements_scope->set_class_initializer_allows_await(
+            parser->is_await_allowed());
         static_elements_function_id = info_id;
         // Actually consume the id. The id that was passed in might be an
         // earlier id in case of computed property names.
@@ -647,6 +654,8 @@ class ParserBase {
             FunctionKind::kClassMembersInitializerFunction);
         instance_members_scope->SetLanguageMode(LanguageMode::kStrict);
         instance_members_scope->set_start_position(beg_pos);
+        instance_members_scope->set_class_initializer_allows_await(
+            parser->is_await_allowed());
         instance_members_function_id = info_id;
         // Actually consume the id. The id that was passed in might be an
         // earlier id in case of computed property names.
@@ -726,6 +735,7 @@ class ParserBase {
     bool is_private;
     bool is_static;
     bool is_rest;
+    std::optional<AllowReindexScope> allow_reindex_scope;
   };
 
   void DeclareLabel(ZonePtrList<const AstRawString>** labels,
@@ -1669,6 +1679,10 @@ class ParserBase {
     return expression_scope_;
   }
 
+ public:
+  V8_INLINE void set_max_drift(int drift) { max_drift_ = drift; }
+  V8_INLINE int max_drift() const { return max_drift_; }
+
   bool MaybeParsingArrowhead() const {
     return expression_scope_ != nullptr &&
            expression_scope_->has_possible_arrow_parameter_in_scope_chain();
@@ -1731,6 +1745,7 @@ class ParserBase {
   FuncNameInferrer fni_;
   AstValueFactory* ast_value_factory_;  // Not owned.
   typename Types::Factory ast_node_factory_;
+  int max_drift_ = 0;
   RuntimeCallStats* runtime_call_stats_;
   internal::V8FileLogger* v8_file_logger_;
   bool parsing_on_main_thread_;
@@ -1771,6 +1786,7 @@ class ParserBase {
     DeclarationScope* scope = nullptr;
     int function_literal_id = -1;
     bool could_be_immediately_invoked = false;
+    const AllowReindexScope* allow_reindex_scope = nullptr;
 
     bool HasInitialState() const { return scope == nullptr; }
 
@@ -1779,6 +1795,7 @@ class ParserBase {
       function_literal_id = -1;
       ClearStrictParameterError();
       could_be_immediately_invoked = false;
+      allow_reindex_scope = nullptr;
       DCHECK(HasInitialState());
     }
 
@@ -1806,13 +1823,14 @@ class ParserBase {
 template <typename Impl>
 ParserBase<Impl>::FunctionState::FunctionState(
     FunctionState** function_state_stack, Scope** scope_stack,
-    DeclarationScope* scope)
+    DeclarationScope* scope, FunctionKind kind)
     : BlockState(scope_stack, scope),
       expected_property_count_(0),
       suspend_count_(0),
       function_state_stack_(function_state_stack),
       outer_function_state_(*function_state_stack),
       scope_(scope),
+      kind_(kind),
       dont_optimize_reason_(BailoutReason::kNoReason),
       next_function_is_likely_called_(false),
       previous_function_was_likely_called_(false),
@@ -2554,6 +2572,7 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseProperty(
       prop_info->is_computed_name = true;
       Consume(Token::kLeftBracket);
       AcceptINScope scope(this, true);
+      prop_info->allow_reindex_scope.emplace(&max_drift_);
       ExpressionT expression = ParseAssignmentExpression();
       Expect(Token::kRightBracket);
       if (prop_info->kind == ParsePropertyKind::kNotSet) {
@@ -2720,7 +2739,9 @@ ParserBase<Impl>::ParseClassPropertyDefinition(ClassInfo* class_info,
         if (!has_error() && next_info_id != PeekNextInfoId() &&
             !(prop_info->is_static ? class_info->has_static_elements()
                                    : class_info->has_instance_members())) {
-          impl()->ReindexComputedMemberName(name_expression);
+          DCHECK(prop_info->allow_reindex_scope.has_value());
+          impl()->ReindexComputedMemberName(name_expression,
+                                            *prop_info->allow_reindex_scope);
         }
       } else {
         CheckClassFieldName(prop_info->name, prop_info->is_static);
@@ -3293,7 +3314,8 @@ ParserBase<Impl>::ParseAssignmentExpressionCoverGrammarContinuation(
     // not, we'll reindex the arrow function formal parameters to shift them all
     // 1 down to make space for the arrow function.
     if (function_literal_id != GetNextInfoId()) {
-      impl()->ReindexArrowFunctionFormalParameters(&parameters);
+      AllowReindexScope dummy_scope(nullptr);
+      impl()->ReindexArrowFunctionFormalParameters(&parameters, dummy_scope);
     }
 
     expression = ParseArrowFunctionLiteral(parameters, function_literal_id,
@@ -3985,6 +4007,11 @@ ParserBase<Impl>::ParseLeftHandSideContinuation(ExpressionT result) {
         int eval_scope_info_index = 0;
         if (CheckPossibleEvalCall(result, is_optional, scope())) {
           eval_scope_info_index = GetNextInfoId();
+          if (!Call::EvalScopeInfoIndexField::is_valid(eval_scope_info_index +
+                                                       max_drift_)) {
+            ReportMessage(MessageTemplate::kTooManyEvals);
+            return impl()->FailureExpression();
+          }
         }
 
         result = factory()->NewCall(result, args, pos, has_spread,

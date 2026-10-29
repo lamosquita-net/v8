@@ -329,6 +329,7 @@ void DeclarationScope::SetDefaults() {
   is_skipped_function_ = false;
   preparse_data_builder_ = nullptr;
   class_scope_has_private_brand_ = false;
+  class_initializer_allows_await_ = false;
 #ifdef DEBUG
   DeclarationScope* outer_declaration_scope =
       outer_scope_ ? outer_scope_->GetDeclarationScope() : nullptr;
@@ -1495,7 +1496,8 @@ bool Scope::NeedsScopeInfo() const {
 }
 
 bool Scope::ShouldBanArguments() {
-  return GetReceiverScope()->should_ban_arguments();
+  return GetReceiverScope()->should_ban_arguments() &&
+         !GetClosureScope()->is_reparsed();
 }
 
 DeclarationScope* Scope::GetReceiverScope() {
@@ -2660,6 +2662,12 @@ void Scope::AllocateScopeInfosRecursively(
     CHECK_EQ(scope_info_->scope_type(), scope_type_);
     CHECK_EQ(scope_info_->HasContext(), NeedsContext());
     CHECK_EQ(scope_info_->ContextLength(), num_heap_slots_);
+    if (is_function_scope()) {
+      DeclarationScope* function_scope = AsDeclarationScope();
+      CHECK_EQ(scope_info_->HasSimpleParameters(),
+               function_scope->has_simple_parameters());
+      CHECK_EQ(scope_info_->ParameterCount(), function_scope->num_parameters());
+    }
 #ifdef DEBUG
     // Consume the scope info.
     it->second = {};

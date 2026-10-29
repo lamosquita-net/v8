@@ -1413,10 +1413,14 @@ class FeedbackMaker {
         WasmCodePointer{static_cast<uint32_t>(target_truncated_smi.value())};
     Address entry = GetProcessWideWasmCodePointerTable()
                         ->GetEntrypointWithoutSignatureCheck(handle);
-    wasm::WasmCode* code =
-        wasm::GetWasmCodeManager()->LookupCode(nullptr, entry);
-    if (!code || code->native_module() != instance_data_->native_module() ||
-        code->IsAnonymous()) {
+    // FlyWeb (upstream 00250c2d2c): only look up the target address in the
+    // current NativeModule: a target from a foreign module is not an inline
+    // candidate, and looking it up across all modules via
+    // `WasmCodeManager::LookupCode` could race with concurrent teardown of that
+    // foreign module.
+    WasmCodeRefScope code_ref_scope;
+    wasm::WasmCode* code = instance_data_->native_module()->Lookup(entry);
+    if (!code || code->IsAnonymous()) {
       // Was not in the main table (e.g., because it's an imported function).
       has_non_inlineable_targets_ = true;
       return;

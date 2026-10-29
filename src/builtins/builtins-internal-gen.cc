@@ -1676,8 +1676,14 @@ TF_BUILTIN(InstantiateAsmJs, CodeStubAssembler) {
   BIND(&tailcall_to_function);
   // On failure, tail call back to regular JavaScript by re-calling the given
   // function which has been reset to the compile lazy builtin.
-
+  // FlyWeb (upstream c82024befb): take the code from the dispatch handle that
+  // was already read instead of reading the function's handle a second time.
+#if defined(V8_JS_LINKAGE_INCLUDES_DISPATCH_HANDLE) || \
+    defined(V8_ENABLE_LEAPTIERING)
+  TNode<Code> code = LoadCodeObjectFromJSDispatchTable(dispatch_handle);
+#else
   TNode<Code> code = LoadJSFunctionCode(function);
+#endif
   TailCallJSCode(code, context, function, new_target, arg_count,
                  dispatch_handle);
 }

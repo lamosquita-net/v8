@@ -1932,7 +1932,8 @@ void BytecodeGenerator::GenerateAsyncGeneratorFunctionBody() {
             },
             catch_prediction());
       },
-      [&](Register body_continuation_token, Register body_continuation_result) {
+      [&](Register body_continuation_token, Register body_continuation_result,
+          Register message) {
         RegisterAllocationScope register_scope(this);
         Register arg = register_allocator()->NewRegister();
         builder()
@@ -2811,7 +2812,7 @@ void BytecodeGenerator::BuildTryFinally(
   try_control_builder.BeginFinally();
 
   // Evaluate the finally-block.
-  finally_body_func(token, result);
+  finally_body_func(token, result, message);
   try_control_builder.EndFinally();
 
   // Dynamic dispatch after the finally-block.
@@ -2833,7 +2834,8 @@ void BytecodeGenerator::BuildDisposeScope(WrappedFunc wrapped_func,
       // Try block
       [&]() { wrapped_func(); },
       // Finally block
-      [&](Register body_continuation_token, Register body_continuation_result) {
+      [&](Register body_continuation_token, Register body_continuation_result,
+          Register message) {
         if (has_await_using) {
           Register result_register = register_allocator()->NewRegister();
           Register disposable_stack_register =
@@ -2846,14 +2848,15 @@ void BytecodeGenerator::BuildDisposeScope(WrappedFunc wrapped_func,
 
           {
             RegisterAllocationScope allocation_scope(this);
-            RegisterList args = register_allocator()->NewRegisterList(4);
+            RegisterList args = register_allocator()->NewRegisterList(5);
             builder()
                 ->MoveRegister(disposable_stack_register, args[0])
                 .MoveRegister(body_continuation_token, args[1])
                 .MoveRegister(body_continuation_result, args[2])
+                .MoveRegister(message, args[3])
                 .LoadLiteral(Smi::FromEnum(
                     DisposableStackResourcesType::kAtLeastOneAsync))
-                .StoreAccumulatorInRegister(args[3]);
+                .StoreAccumulatorInRegister(args[4]);
             builder()->CallRuntime(Runtime::kDisposeDisposableStack, args);
           }
 
@@ -2886,14 +2889,15 @@ void BytecodeGenerator::BuildDisposeScope(WrappedFunc wrapped_func,
 
           loop_builder.BindContinueTarget();
         } else {
-          RegisterList args = register_allocator()->NewRegisterList(4);
+          RegisterList args = register_allocator()->NewRegisterList(5);
           builder()
               ->MoveRegister(current_disposables_stack(), args[0])
               .MoveRegister(body_continuation_token, args[1])
               .MoveRegister(body_continuation_result, args[2])
+              .MoveRegister(message, args[3])
               .LoadLiteral(
                   Smi::FromEnum(DisposableStackResourcesType::kAllSync))
-              .StoreAccumulatorInRegister(args[3]);
+              .StoreAccumulatorInRegister(args[4]);
           builder()->CallRuntime(Runtime::kDisposeDisposableStack, args);
         }
       },
@@ -3023,7 +3027,10 @@ void BytecodeGenerator::VisitForInStatement(ForInStatement* stmt) {
 
   // Prepare the state for executing ForIn.
   builder()->SetExpressionAsStatementPosition(stmt->subject());
-  VisitForAccumulatorValue(stmt->subject());
+  {
+    CurrentScope current_scope(this, stmt->subject_scope());
+    VisitForAccumulatorValue(stmt->subject());
+  }
   builder()->JumpIfUndefinedOrNull(&subject_undefined_label);
   Register receiver = register_allocator()->NewRegister();
   builder()->ToObject(receiver);
@@ -3103,7 +3110,10 @@ void BytecodeGenerator::VisitForOfStatement(ForOfStatement* stmt) {
   EffectResultScope effect_scope(this);
 
   builder()->SetExpressionAsStatementPosition(stmt->subject());
-  VisitForAccumulatorValue(stmt->subject());
+  {
+    CurrentScope current_scope(this, stmt->subject_scope());
+    VisitForAccumulatorValue(stmt->subject());
+  }
 
   // Store the iterator in a dedicated register so that it can be closed on
   // exit, and the 'done' value in a dedicated register so that it can be
@@ -3162,7 +3172,7 @@ void BytecodeGenerator::VisitForOfStatement(ForOfStatement* stmt) {
       },
       // Finally block.
       [&](Register iteration_continuation_token,
-          Register iteration_continuation_result) {
+          Register iteration_continuation_result, Register message) {
         // Finish the iteration in the finally block.
         BuildFinalizeIteration(iterator, done, iteration_continuation_token);
       },
@@ -3213,9 +3223,8 @@ void BytecodeGenerator::VisitTryFinallyStatement(TryFinallyStatement* stmt) {
       // Try block.
       [&]() { Visit(stmt->try_block()); },
       // Finally block.
-      [&](Register body_continuation_token, Register body_continuation_result) {
-        Visit(stmt->finally_block());
-      },
+      [&](Register body_continuation_token, Register body_continuation_result,
+          Register message) { Visit(stmt->finally_block()); },
       catch_prediction(), stmt);
 }
 
@@ -5338,7 +5347,7 @@ void BytecodeGenerator::BuildDestructuringArrayAssignment(
       },
       // Finally block.
       [&](Register iteration_continuation_token,
-          Register iteration_continuation_result) {
+          Register iteration_continuation_result, Register message) {
         // Finish the iteration in the finally block.
         BuildFinalizeIteration(iterator, done, iteration_continuation_token);
       },

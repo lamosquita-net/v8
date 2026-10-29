@@ -180,7 +180,8 @@ class InterpreterLoadGlobalAssembler : public InterpreterAssembler {
 
   void LdaGlobal(int slot_operand_index, int name_operand_index,
                  TypeofMode typeof_mode) {
-    TNode<HeapObject> maybe_feedback_vector = LoadFeedbackVector();
+    TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
+        LoadFeedbackVector();
 
     AccessorAssembler accessor_asm(state());
     ExitPoint exit_point(this, [=, this](TNode<Object> result) {
@@ -601,7 +602,7 @@ IGNITION_HANDLER(GetNamedProperty, InterpreterAssembler) {
   TNode<HeapObject> feedback_vector = LoadFeedbackVector();
 
   // Load receiver.
-  TNode<Object> recv = LoadRegisterAtOperandIndex(0);
+  TNode<JSAny> recv = CAST(LoadRegisterAtOperandIndex(0));
 
   // Load the name and context lazily.
   LazyNode<TaggedIndex> lazy_slot = [=, this] {
@@ -979,7 +980,7 @@ class InterpreterBinaryOpAssembler : public InterpreterAssembler {
     TNode<Object> rhs = GetAccumulator();
     TNode<Context> context = GetContext();
     TNode<UintPtrT> slot_index = BytecodeOperandIdx(1);
-    TNode<HeapObject> maybe_feedback_vector =
+    TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
         LoadFeedbackVectorOrUndefinedIfJitless();
     static constexpr UpdateFeedbackMode mode = DefaultUpdateFeedbackMode();
 
@@ -996,7 +997,7 @@ class InterpreterBinaryOpAssembler : public InterpreterAssembler {
     TNode<Smi> rhs = BytecodeOperandImmSmi(0);
     TNode<Context> context = GetContext();
     TNode<UintPtrT> slot_index = BytecodeOperandIdx(1);
-    TNode<HeapObject> maybe_feedback_vector =
+    TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
         LoadFeedbackVectorOrUndefinedIfJitless();
     static constexpr UpdateFeedbackMode mode = DefaultUpdateFeedbackMode();
 
@@ -1106,7 +1107,7 @@ class InterpreterBitwiseBinaryOpAssembler : public InterpreterAssembler {
     TNode<Object> right = GetAccumulator();
     TNode<Context> context = GetContext();
     TNode<UintPtrT> slot_index = BytecodeOperandIdx(1);
-    TNode<HeapObject> maybe_feedback_vector =
+    TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
         LoadFeedbackVectorOrUndefinedIfJitless();
     static constexpr UpdateFeedbackMode mode = DefaultUpdateFeedbackMode();
 
@@ -1124,7 +1125,7 @@ class InterpreterBitwiseBinaryOpAssembler : public InterpreterAssembler {
     TNode<Smi> right = BytecodeOperandImmSmi(0);
     TNode<UintPtrT> slot_index = BytecodeOperandIdx(1);
     TNode<Context> context = GetContext();
-    TNode<HeapObject> maybe_feedback_vector =
+    TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
         LoadFeedbackVectorOrUndefinedIfJitless();
     static constexpr UpdateFeedbackMode mode = DefaultUpdateFeedbackMode();
 
@@ -1219,7 +1220,7 @@ IGNITION_HANDLER(BitwiseNot, InterpreterAssembler) {
   TNode<Object> value = GetAccumulator();
   TNode<Context> context = GetContext();
   TNode<UintPtrT> slot_index = BytecodeOperandIdx(0);
-  TNode<HeapObject> maybe_feedback_vector =
+  TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
       LoadFeedbackVectorOrUndefinedIfJitless();
   static constexpr UpdateFeedbackMode mode = DefaultUpdateFeedbackMode();
 
@@ -1267,7 +1268,7 @@ IGNITION_HANDLER(Negate, InterpreterAssembler) {
   TNode<Object> value = GetAccumulator();
   TNode<Context> context = GetContext();
   TNode<UintPtrT> slot_index = BytecodeOperandIdx(0);
-  TNode<HeapObject> maybe_feedback_vector =
+  TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
       LoadFeedbackVectorOrUndefinedIfJitless();
   static constexpr UpdateFeedbackMode mode = DefaultUpdateFeedbackMode();
 
@@ -1353,7 +1354,7 @@ IGNITION_HANDLER(Inc, InterpreterAssembler) {
   TNode<Object> value = GetAccumulator();
   TNode<Context> context = GetContext();
   TNode<UintPtrT> slot_index = BytecodeOperandIdx(0);
-  TNode<HeapObject> maybe_feedback_vector =
+  TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
       LoadFeedbackVectorOrUndefinedIfJitless();
   static constexpr UpdateFeedbackMode mode = DefaultUpdateFeedbackMode();
 
@@ -1372,7 +1373,7 @@ IGNITION_HANDLER(Dec, InterpreterAssembler) {
   TNode<Object> value = GetAccumulator();
   TNode<Context> context = GetContext();
   TNode<UintPtrT> slot_index = BytecodeOperandIdx(0);
-  TNode<HeapObject> maybe_feedback_vector =
+  TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
       LoadFeedbackVectorOrUndefinedIfJitless();
   static constexpr UpdateFeedbackMode mode = DefaultUpdateFeedbackMode();
 
@@ -1442,7 +1443,8 @@ IGNITION_HANDLER(LogicalNot, InterpreterAssembler) {
 IGNITION_HANDLER(TypeOf, InterpreterAssembler) {
   TNode<Object> value = GetAccumulator();
   TNode<UintPtrT> slot_id = BytecodeOperandIdx(0);
-  TNode<HeapObject> maybe_feedback_vector = LoadFeedbackVector();
+  TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
+      LoadFeedbackVector();
   TNode<String> result = Typeof(value, slot_id, maybe_feedback_vector);
   SetAccumulator(result);
   Dispatch();
@@ -1497,19 +1499,20 @@ class InterpreterJSCallAssembler : public InterpreterAssembler {
 
   // Generates code to perform a JS call that collects type feedback.
   void JSCall(ConvertReceiverMode receiver_mode) {
-    TNode<Object> function = LoadRegisterAtOperandIndex(0);
+    TNode<JSAny> function = CAST(LoadRegisterAtOperandIndex(0));
     RegListNodePair args = GetRegisterListAtOperandIndex(1);
     TNode<Context> context = GetContext();
 
 #ifndef V8_JITLESS
     // Collect the {function} feedback.
-    LazyNode<Object> receiver = [=, this] {
+    LazyNode<JSAny> receiver = [=, this] {
       return receiver_mode == ConvertReceiverMode::kNullOrUndefined
                  ? UndefinedConstant()
-                 : LoadRegisterAtOperandIndex(1);
+                 : TNode<JSAny>(CAST(LoadRegisterAtOperandIndex(1)));
     };
     TNode<UintPtrT> slot_id = BytecodeOperandIdx(3);
-    TNode<HeapObject> maybe_feedback_vector = LoadFeedbackVector();
+    TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
+        LoadFeedbackVector();
     CollectCallFeedback(function, receiver, context, maybe_feedback_vector,
                         slot_id);
 #endif  // !V8_JITLESS
@@ -1527,20 +1530,21 @@ class InterpreterJSCallAssembler : public InterpreterAssembler {
         (receiver_mode == ConvertReceiverMode::kNullOrUndefined) ? 0 : 1;
     const int kReceiverAndArgOperandCount = kReceiverOperandCount + arg_count;
 
-    TNode<Object> function = LoadRegisterAtOperandIndex(0);
+    TNode<JSAny> function = CAST(LoadRegisterAtOperandIndex(0));
     TNode<Context> context = GetContext();
 
 #ifndef V8_JITLESS
     // Collect the {function} feedback.
-    LazyNode<Object> receiver = [=, this] {
+    LazyNode<JSAny> receiver = [=, this] {
       return receiver_mode == ConvertReceiverMode::kNullOrUndefined
                  ? UndefinedConstant()
-                 : LoadRegisterAtOperandIndex(1);
+                 : TNode<JSAny>(CAST(LoadRegisterAtOperandIndex(1)));
     };
     const int kSlotOperandIndex =
         kFirstArgumentOperandIndex + kReceiverAndArgOperandCount;
     TNode<UintPtrT> slot_id = BytecodeOperandIdx(kSlotOperandIndex);
-    TNode<HeapObject> maybe_feedback_vector = LoadFeedbackVector();
+    TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
+        LoadFeedbackVector();
     CollectCallFeedback(function, receiver, context, maybe_feedback_vector,
                         slot_id);
 #endif  // !V8_JITLESS
@@ -1676,7 +1680,8 @@ IGNITION_HANDLER(CallJSRuntime, InterpreterAssembler) {
   // Get the function to call from the native context.
   TNode<Context> context = GetContext();
   TNode<NativeContext> native_context = LoadNativeContext(context);
-  TNode<Object> function = LoadContextElement(native_context, context_index);
+  TNode<JSAny> function =
+      CAST(LoadContextElement(native_context, context_index));
 
   // Call the function.
   CallJSAndDispatch(function, context, args,
@@ -1690,7 +1695,7 @@ IGNITION_HANDLER(CallJSRuntime, InterpreterAssembler) {
 // final argument is always a spread.
 //
 IGNITION_HANDLER(CallWithSpread, InterpreterAssembler) {
-  TNode<Object> callable = LoadRegisterAtOperandIndex(0);
+  TNode<JSAny> callable = CAST(LoadRegisterAtOperandIndex(0));
   RegListNodePair args = GetRegisterListAtOperandIndex(1);
   TNode<UintPtrT> slot_id = BytecodeOperandIdx(3);
   TNode<Context> context = GetContext();
@@ -1706,8 +1711,8 @@ IGNITION_HANDLER(CallWithSpread, InterpreterAssembler) {
 // argument is always a spread. The new.target is in the accumulator.
 //
 IGNITION_HANDLER(ConstructWithSpread, InterpreterAssembler) {
-  TNode<Object> new_target = GetAccumulator();
-  TNode<Object> constructor = LoadRegisterAtOperandIndex(0);
+  TNode<JSAny> new_target = CAST(GetAccumulator());
+  TNode<JSAny> constructor = CAST(LoadRegisterAtOperandIndex(0));
   RegListNodePair args = GetRegisterListAtOperandIndex(1);
   TNode<UintPtrT> slot_id = BytecodeOperandIdx(3);
   TNode<Context> context = GetContext();
@@ -1723,8 +1728,8 @@ IGNITION_HANDLER(ConstructWithSpread, InterpreterAssembler) {
 // current frame. The new.target is in the accumulator.
 //
 IGNITION_HANDLER(ConstructForwardAllArgs, InterpreterAssembler) {
-  TNode<Object> new_target = GetAccumulator();
-  TNode<Object> constructor = LoadRegisterAtOperandIndex(0);
+  TNode<JSAny> new_target = CAST(GetAccumulator());
+  TNode<JSAny> constructor = CAST(LoadRegisterAtOperandIndex(0));
   TNode<TaggedIndex> slot_id = BytecodeOperandIdxTaggedIndex(1);
   TNode<Context> context = GetContext();
   TNode<Object> result =
@@ -1740,11 +1745,12 @@ IGNITION_HANDLER(ConstructForwardAllArgs, InterpreterAssembler) {
 // registers. The new.target is in the accumulator.
 //
 IGNITION_HANDLER(Construct, InterpreterAssembler) {
-  TNode<Object> new_target = GetAccumulator();
-  TNode<Object> constructor = LoadRegisterAtOperandIndex(0);
+  TNode<JSAny> new_target = CAST(GetAccumulator());
+  TNode<JSAny> constructor = CAST(LoadRegisterAtOperandIndex(0));
   RegListNodePair args = GetRegisterListAtOperandIndex(1);
   TNode<UintPtrT> slot_id = BytecodeOperandIdx(3);
-  TNode<HeapObject> maybe_feedback_vector = LoadFeedbackVector();
+  TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
+      LoadFeedbackVector();
   TNode<Context> context = GetContext();
   TNode<Object> result = Construct(constructor, context, new_target, args,
                                    slot_id, maybe_feedback_vector);
@@ -1887,11 +1893,12 @@ IGNITION_HANDLER(TestIn, InterpreterAssembler) {
 // referenced by the accumulator.
 IGNITION_HANDLER(TestInstanceOf, InterpreterAssembler) {
   TNode<Object> object = LoadRegisterAtOperandIndex(0);
-  TNode<Object> callable = GetAccumulator();
+  TNode<JSAny> callable = CAST(GetAccumulator());
   TNode<Context> context = GetContext();
 
 #ifndef V8_JITLESS
-  TNode<HeapObject> maybe_feedback_vector = LoadFeedbackVector();
+  TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
+      LoadFeedbackVector();
   TNode<UintPtrT> slot_id = BytecodeOperandIdx(1);
   CollectInstanceOfFeedback(callable, context, maybe_feedback_vector, slot_id);
 #endif  // !V8_JITLESS
@@ -2569,7 +2576,8 @@ IGNITION_HANDLER(CreateArrayLiteral, InterpreterAssembler) {
 //
 // Creates an empty JSArray literal for literal index <literal_idx>.
 IGNITION_HANDLER(CreateEmptyArrayLiteral, InterpreterAssembler) {
-  TNode<HeapObject> maybe_feedback_vector = LoadFeedbackVector();
+  TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
+      LoadFeedbackVector();
   TNode<TaggedIndex> slot = BytecodeOperandIdxTaggedIndex(0);
   TNode<Context> context = GetContext();
 
@@ -2691,7 +2699,8 @@ IGNITION_HANDLER(CloneObject, InterpreterAssembler) {
       DecodeWordFromWord32<CreateObjectLiteralFlags::FlagsBits>(bytecode_flags);
   TNode<Smi> smi_flags = SmiTag(Signed(raw_flags));
   TNode<TaggedIndex> slot = BytecodeOperandIdxTaggedIndex(2);
-  TNode<HeapObject> maybe_feedback_vector = LoadFeedbackVector();
+  TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
+      LoadFeedbackVector();
   TNode<Context> context = GetContext();
 
   TNode<Object> result = CallBuiltin(Builtin::kCloneObjectIC, context, source,
@@ -2712,7 +2721,8 @@ IGNITION_HANDLER(GetTemplateObject, InterpreterAssembler) {
       closure, JSFunction::kSharedFunctionInfoOffset);
   TNode<Object> description = LoadConstantPoolEntryAtOperandIndex(0);
   TNode<UintPtrT> slot = BytecodeOperandIdx(1);
-  TNode<HeapObject> maybe_feedback_vector = LoadFeedbackVector();
+  TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
+      LoadFeedbackVector();
   TNode<Object> result =
       CallBuiltin(Builtin::kGetTemplateObject, context, shared_info,
                   description, slot, maybe_feedback_vector);
@@ -3158,7 +3168,8 @@ IGNITION_HANDLER(ForInPrepare, InterpreterAssembler) {
   // The {enumerator} is either a Map or a FixedArray.
   TNode<HeapObject> enumerator = CAST(GetAccumulator());
   TNode<UintPtrT> vector_index = BytecodeOperandIdx(1);
-  TNode<HeapObject> maybe_feedback_vector = LoadFeedbackVector();
+  TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
+      LoadFeedbackVector();
 
   TNode<HeapObject> cache_type = enumerator;  // Just to clarify the rename.
   TNode<FixedArray> cache_array;
@@ -3176,16 +3187,17 @@ IGNITION_HANDLER(ForInPrepare, InterpreterAssembler) {
 //
 // Returns the next enumerable property in the the accumulator.
 IGNITION_HANDLER(ForInNext, InterpreterAssembler) {
-  TNode<HeapObject> receiver = CAST(LoadRegisterAtOperandIndex(0));
+  TNode<JSAnyNotSmi> receiver = CAST(LoadRegisterAtOperandIndex(0));
   TNode<Smi> index = CAST(LoadRegisterAtOperandIndex(1));
   TNode<Object> cache_type;
   TNode<Object> cache_array;
   std::tie(cache_type, cache_array) = LoadRegisterPairAtOperandIndex(2);
   TNode<UintPtrT> vector_index = BytecodeOperandIdx(3);
-  TNode<HeapObject> maybe_feedback_vector = LoadFeedbackVector();
+  TNode<Union<FeedbackVector, Undefined>> maybe_feedback_vector =
+      LoadFeedbackVector();
 
   // Load the next key from the enumeration array.
-  TNode<Object> key = LoadFixedArrayElement(CAST(cache_array), index, 0);
+  TNode<JSAny> key = CAST(LoadFixedArrayElement(CAST(cache_array), index, 0));
 
   // Check if we can use the for-in fast path potentially using the enum cache.
   Label if_fast(this), if_slow(this, Label::kDeferred);

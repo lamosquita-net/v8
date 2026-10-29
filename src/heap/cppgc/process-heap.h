@@ -22,6 +22,12 @@ class ProcessGlobalLock final {
     kForCrossThreadHandleCreation,
   };
 
+#if defined(V8_USE_PERFETTO)
+  // FlyWeb: Chromium 128's Perfetto has no perfetto::NamedTrack (V8 13.5,
+  // e637e80f19); a global track with a fixed id keeps the same trace slices.
+  static constexpr uint64_t kProcessGlobalLockTrackId = 0x63707067634c6f63;
+#endif  // defined(V8_USE_PERFETTO)
+
   template <Reason reason>
   V8_INLINE static void Lock() {
     process_mutex_.Pointer()->Lock();
@@ -30,13 +36,13 @@ class ProcessGlobalLock final {
     switch (reason) {
       case Reason::kForGC:
         TRACE_EVENT_BEGIN(TRACE_DISABLED_BY_DEFAULT("cppgc"), "AcquiredForGC",
-                          perfetto::NamedTrack("CppGC.ProcessGlobalLock"));
+                          perfetto::Track::Global(kProcessGlobalLockTrackId));
         break;
       case Reason::kForCrossThreadHandleCreation:
 #ifdef DEBUG
         TRACE_EVENT_BEGIN(TRACE_DISABLED_BY_DEFAULT("cppgc"),
                           "AcquiredForCrossThreadHandleCreation",
-                          perfetto::NamedTrack("CppGC.ProcessGlobalLock"));
+                          perfetto::Track::Global(kProcessGlobalLockTrackId));
 #endif  // DEBUG
         break;
     }
@@ -49,12 +55,12 @@ class ProcessGlobalLock final {
     switch (reason) {
       case Reason::kForGC:
         TRACE_EVENT_END(TRACE_DISABLED_BY_DEFAULT("cppgc"),
-                        perfetto::NamedTrack("CppGC.ProcessGlobalLock"));
+                        perfetto::Track::Global(kProcessGlobalLockTrackId));
         break;
       case Reason::kForCrossThreadHandleCreation:
 #ifdef DEBUG
         TRACE_EVENT_END(TRACE_DISABLED_BY_DEFAULT("cppgc"),
-                        perfetto::NamedTrack("CppGC.ProcessGlobalLock"));
+                        perfetto::Track::Global(kProcessGlobalLockTrackId));
 #endif  // DEBUG
         break;
     }

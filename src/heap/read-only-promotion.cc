@@ -195,11 +195,13 @@ class Committee final {
   static bool IsPromoCandidateJSExternalObject(Committee* committee,
                                                Isolate* isolate,
                                                Tagged<JSExternalObject> o) {
-    // Check if the external pointer value is serializable.
-    DCHECK(IsNull(o->map()->map()->native_context_or_null()));
-    Address address = reinterpret_cast<Address>(o->value());
-    auto maybe_index = committee->ref_encoder().TryEncode(address);
-    return !maybe_index.IsNothing();
+    // FlyWeb: the Blink of the 128 base puts v8::External objects with
+    // serializable values in its snapshot, but kExternalObjectValueTag is not
+    // in the maybe-read-only range: the first isolate stores the entry in the
+    // old space and the next one fails the CHECK in
+    // ExternalPointerTable::SetUpFromReadOnlyArtifacts() (every worker). Keep
+    // them out of RO space, as V8 13.5 did.
+    return false;
   }
   static bool IsPromoCandidateFunctionTemplateInfo(
       Committee* committee, Isolate* isolate, Tagged<FunctionTemplateInfo> o) {

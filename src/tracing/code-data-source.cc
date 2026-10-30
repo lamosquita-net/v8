@@ -248,11 +248,9 @@ uint64_t CodeDataSourceIncrementalState::InternWasmScript(
   script->set_iid(iid);
   script->set_script_id(script_id);
   script->set_url(url);
-  if (log_script_sources()) {
-    base::Vector<const uint8_t> bytes_vec = native_module->wire_bytes();
-    script->set_wire_bytes(bytes_vec.begin(), bytes_vec.size());
-    // TODO(carlscab): Log script source if needed.
-  }
+  // FlyWeb: the perfetto protos of the Chromium 128 base have no wire_bytes in
+  // InternedV8WasmScript (added for V8 13.6), so the module is not written.
+  static_cast<void>(native_module);
 
   return iid;
 }

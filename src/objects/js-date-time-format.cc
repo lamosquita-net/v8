@@ -2876,7 +2876,7 @@ MaybeDirectHandle<JSArray> FieldPositionIteratorToArray(
                        IcuDateFieldIdToDateType(-1, isolate), substring);
     }
   }
-  JSObject::ValidateElements(*result);
+  JSObject::ValidateElements(isolate, *result);
   return result;
 }
 
@@ -2997,7 +2997,7 @@ std::optional<MaybeDirectHandle<JSArray>> FormattedDateIntervalToJSArray(
     THROW_NEW_ERROR(isolate, NewTypeError(MessageTemplate::kIcuError));
   }
 
-  JSObject::ValidateElements(*array);
+  JSObject::ValidateElements(isolate, *array);
   if (output_range) return array;
   return std::nullopt;
 }

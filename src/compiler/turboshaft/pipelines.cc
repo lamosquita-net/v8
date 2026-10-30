@@ -13,6 +13,9 @@
 
 namespace v8::internal::compiler::turboshaft {
 
+#define RUN_MAYBE_ABORT(phase, ...) \
+  if (V8_UNLIKELY(!Run<phase>(__VA_ARGS__))) return {};
+
 void SimplificationAndNormalizationPhase::Run(PipelineData* data,
                                               Zone* temp_zone) {
   CopyingPhase<LoadStoreSimplificationReducer,
@@ -42,10 +45,10 @@ bool Pipeline::AllocateRegisters(const RegisterConfiguration* config,
 
   data_->InitializeRegisterComponent(config, call_descriptor);
 
-  Run<MeetRegisterConstraintsPhase>();
-  Run<ResolvePhisPhase>();
-  Run<BuildLiveRangesPhase>();
-  Run<BuildLiveRangeBundlesPhase>();
+  RUN_MAYBE_ABORT(MeetRegisterConstraintsPhase);
+  RUN_MAYBE_ABORT(ResolvePhisPhase);
+  RUN_MAYBE_ABORT(BuildLiveRangesPhase);
+  RUN_MAYBE_ABORT(BuildLiveRangeBundlesPhase);
 
   TraceSequence("before register allocation");
   if (verifier != nullptr) {
@@ -60,19 +63,19 @@ bool Pipeline::AllocateRegisters(const RegisterConfiguration* config,
                                        data_->register_allocation_data());
   }
 
-  Run<AllocateGeneralRegistersPhase<LinearScanAllocator>>();
+  RUN_MAYBE_ABORT(AllocateGeneralRegistersPhase<LinearScanAllocator>);
 
   if (data_->sequence()->HasFPVirtualRegisters()) {
-    Run<AllocateFPRegistersPhase<LinearScanAllocator>>();
+    RUN_MAYBE_ABORT(AllocateFPRegistersPhase<LinearScanAllocator>);
   }
 
   if (data_->sequence()->HasSimd128VirtualRegisters() &&
       (kFPAliasing == AliasingKind::kIndependent)) {
-    Run<AllocateSimd128RegistersPhase<LinearScanAllocator>>();
+    RUN_MAYBE_ABORT(AllocateSimd128RegistersPhase<LinearScanAllocator>);
   }
 
-  Run<DecideSpillingModePhase>();
-  Run<AssignSpillSlotsPhase>();
+  RUN_MAYBE_ABORT(DecideSpillingModePhase);
+  RUN_MAYBE_ABORT(AssignSpillSlotsPhase);
 
   // The prologue grows the frame with a single stack pointer decrement, before
   // the function entry stack check runs. A frame no larger than the smallest OS
@@ -87,7 +90,7 @@ bool Pipeline::AllocateRegisters(const RegisterConfiguration* config,
     return false;
   }
 
-  Run<CommitAssignmentPhase>();
+  RUN_MAYBE_ABORT(CommitAssignmentPhase);
 
   // TODO(chromium:725559): remove this check once
   // we understand the cause of the bug. We keep just the
@@ -96,14 +99,14 @@ bool Pipeline::AllocateRegisters(const RegisterConfiguration* config,
     verifier->VerifyAssignment("Immediately after CommitAssignmentPhase.");
   }
 
-  Run<ConnectRangesPhase>();
+  RUN_MAYBE_ABORT(ConnectRangesPhase);
 
-  Run<ResolveControlFlowPhase>();
+  RUN_MAYBE_ABORT(ResolveControlFlowPhase);
 
-  Run<PopulateReferenceMapsPhase>();
+  RUN_MAYBE_ABORT(PopulateReferenceMapsPhase);
 
   if (v8_flags.turbo_move_optimization) {
-    Run<OptimizeMovesPhase>();
+    RUN_MAYBE_ABORT(OptimizeMovesPhase);
   }
 
   TraceSequence("after register allocation");
@@ -131,10 +134,10 @@ bool Pipeline::AllocateRegisters(const RegisterConfiguration* config,
   data()->InitializeCodegenComponent(osr_helper, jump_optimization_info);
 
   // Perform instruction selection and register allocation.
-  PrepareForInstructionSelection(profile);
-  CHECK(SelectInstructions(linkage));
+  if (!PrepareForInstructionSelection(profile)) return false;
+  if (!SelectInstructions(linkage)) return false;
   if (!AllocateRegisters(linkage->GetIncomingDescriptor())) return false;
-  AssembleCode(linkage);
+  if (!AssembleCode(linkage)) return false;
 
   if (v8_flags.turbo_profiling) {
     info()->profiler_data()->SetHash(initial_graph_hash);
@@ -150,11 +153,9 @@ bool Pipeline::AllocateRegisters(const RegisterConfiguration* config,
     if (!SelectInstructions(linkage)) {
       return false;
     }
-    if (!AllocateRegisters(linkage->GetIncomingDescriptor())) {
-      return false;
-    }
+    if (!AllocateRegisters(linkage->GetIncomingDescriptor())) return false;
     // Generate the final machine code.
-    AssembleCode(linkage);
+    if (!AssembleCode(linkage)) return false;
   }
   return true;
 }
@@ -162,17 +163,17 @@ bool Pipeline::AllocateRegisters(const RegisterConfiguration* config,
 void BuiltinPipeline::OptimizeBuiltin() {
   Tracing::Scope tracing_scope(data()->info());
 
-  Run<CsaEarlyMachineOptimizationPhase>();
-  Run<CsaLoadEliminationPhase>();
-  Run<CsaLateEscapeAnalysisPhase>();
-  Run<CsaBranchEliminationPhase>();
-  Run<CsaOptimizePhase>();
+  CHECK(Run<CsaEarlyMachineOptimizationPhase>());
+  CHECK(Run<CsaLoadEliminationPhase>());
+  CHECK(Run<CsaLateEscapeAnalysisPhase>());
+  CHECK(Run<CsaBranchEliminationPhase>());
+  CHECK(Run<CsaOptimizePhase>());
 
   if (v8_flags.turboshaft_enable_debug_features) {
-    Run<DebugFeatureLoweringPhase>();
+    CHECK(Run<DebugFeatureLoweringPhase>());
   }
 
-  Run<CodeEliminationAndSimplificationPhase>();
+  CHECK(Run<CodeEliminationAndSimplificationPhase>());
 }
 
 }  // namespace v8::internal::compiler::turboshaft

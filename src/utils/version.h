@@ -53,7 +53,7 @@ class V8_EXPORT Version {
   // continue, class member initializer reparse), 25 = engine level 136 (V8
   // 13.6 with the same backports), 26 = seg/fs37-v8 (FS.37: post-136
   // merges; 848d7f4122 changes the bytecode of `await using` in for loops).
-  static constexpr int kFlyWebCacheEpoch = 26;
+  static constexpr int kFlyWebCacheEpoch = 27;
   static uint32_t Hash() {
     return static_cast<uint32_t>(base::hash_combine(
         major_, minor_, build_, patch_, kFlyWebCacheEpoch));

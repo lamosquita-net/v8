@@ -674,7 +674,9 @@ class V8_EXPORT_PRIVATE NativeModule final {
   bool HasCode(uint32_t index) const;
   bool HasCodeWithTier(uint32_t index, ExecutionTier tier) const;
 
-  void SetWasmSourceMap(std::unique_ptr<WasmModuleSourceMap> source_map);
+  // Protected by {allocation_mutex_}.
+  // Does nothing if {source_map_} is already populated.
+  void SetWasmSourceMapIfUnset(std::unique_ptr<WasmModuleSourceMap> source_map);
   WasmModuleSourceMap* GetWasmSourceMap() const;
 
   Address jump_table_start() const {

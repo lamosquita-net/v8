@@ -94,7 +94,9 @@ Tagged<SharedFunctionInfo> SourceTextModule::GetSharedFunctionInfo() const {
     case kPreLinking:
       return Cast<SharedFunctionInfo>(code());
     case kLinking:
-      return Cast<JSFunction>(code())->shared();
+      return IsJSGeneratorObject(code())
+                 ? Cast<JSGeneratorObject>(code())->function()->shared()
+                 : Cast<JSFunction>(code())->shared();
     case kLinked:
     case kEvaluating:
     case kEvaluatingAsync:
@@ -440,6 +442,7 @@ bool SourceTextModule::PrepareInstantiate(
 bool SourceTextModule::RunInitializationCode(
     Isolate* isolate, DirectHandle<SourceTextModule> module) {
   DCHECK_EQ(module->status(), kLinking);
+  CHECK(IsJSFunction(module->code()));  // FlyWeb: d87667efce's CheckedCast.
   DirectHandle<JSFunction> function(Cast<JSFunction>(module->code()), isolate);
   DCHECK_EQ(MODULE_SCOPE, function->shared()->scope_info()->scope_type());
   DirectHandle<Object> receiver = isolate->factory()->undefined_value();
@@ -520,15 +523,32 @@ bool SourceTextModule::MaybeTransitionComponent(
     //    iv. Set requiredModule.[[Status]] to LINKED.
     //     v. If requiredModule and module are the same Module Record, set done
     //        to true.
+    if (new_status == kLinked) {
+      // FlyWeb: upstream d87667efce (crbug.com/559893859). RunInitializationCode
+      // can fail (stack overflow, termination), so it runs for every module
+      // in the strongly connected component before any of them becomes
+      // kLinked; otherwise earlier modules stayed kLinked, were skipped by
+      // Module::ResetGraph and kept references to a failed component.
+      bool found = false;
+      for (DirectHandle<SourceTextModule> required_module : *stack) {
+        DCHECK_EQ(required_module->status(), kLinking);
+        if (!SourceTextModule::RunInitializationCode(isolate,
+                                                     required_module)) {
+          return false;
+        }
+        if (*required_module == *module) {
+          found = true;
+          break;
+        }
+      }
+      CHECK(found);
+    }
     do {
       ancestor = stack->front();
       stack->pop_front();
       DCHECK_EQ(ancestor->status(),
                 new_status == kLinked ? kLinking : kEvaluating);
       if (new_status == kLinked) {
-        if (!SourceTextModule::RunInitializationCode(isolate, ancestor)) {
-          return false;
-        }
         ancestor->SetStatus(kLinked);
       } else {
         DCHECK(IsTheHole(ancestor->cycle_root(), isolate));
@@ -1353,7 +1373,11 @@ void SourceTextModule::Reset(Isolate* isolate,
   DisallowGarbageCollection no_gc;
   Tagged<SourceTextModule> raw_module = *module;
   if (raw_module->status() == kLinking) {
-    raw_module->set_code(Cast<JSFunction>(raw_module->code())->shared());
+    // A kLinking module holds either a JSFunction (before
+    // RunInitializationCode) or a JSGeneratorObject (if a later module in the
+    // same SCC failed RunInitializationCode). Restore the underlying
+    // SharedFunctionInfo for kUnlinked (upstream d87667efce).
+    raw_module->set_code(raw_module->GetSharedFunctionInfo());
   }
   raw_module->set_regular_exports(*regular_exports);
   raw_module->set_regular_imports(*regular_imports);

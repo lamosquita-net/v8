@@ -967,7 +967,7 @@ void Template::Set(v8::Local<Name> name, v8::Local<Data> value,
   // ObjectTemplate as a property value then we can not cache the receiver
   // template.
   if (i::IsObjectTemplateInfo(*value_obj)) {
-    templ->set_serial_number(i::TemplateInfo::kDoNotCache);
+    templ->set_is_cacheable(false);
   }
 
   i::ApiNatives::AddDataProperty(i_isolate, templ,
@@ -2694,9 +2694,8 @@ MaybeLocal<Module> ScriptCompiler::CompileModule(
 }
 
 uint32_t ScriptCompiler::CachedDataVersionTag() {
-  return static_cast<uint32_t>(base::hash_combine(
-      internal::Version::Hash(), internal::FlagList::Hash(),
-      static_cast<uint32_t>(internal::CpuFeatures::SupportedFeatures())));
+  return static_cast<uint32_t>(base::hash_combine(internal::Version::Hash(),
+                                                  internal::FlagList::Hash()));
 }
 
 ScriptCompiler::CachedData* ScriptCompiler::CreateCodeCache(
@@ -3062,10 +3061,12 @@ MaybeLocal<String> Message::GetSourceLine(Local<Context> context) const {
   RETURN_ESCAPED(Utils::ToLocal(self->GetSourceLine()));
 }
 
-void Message::PrintCurrentStackTrace(Isolate* v8_isolate, std::ostream& out) {
+void Message::PrintCurrentStackTrace(
+    Isolate* v8_isolate, std::ostream& out,
+    PrintCurrentStackTraceFilterCallback should_include_frame_callback) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
   ENTER_V8_NO_SCRIPT_NO_EXCEPTION(i_isolate);
-  i_isolate->PrintCurrentStackTrace(out);
+  i_isolate->PrintCurrentStackTrace(out, should_include_frame_callback);
 }
 
 // --- S t a c k T r a c e ---
@@ -6486,6 +6487,12 @@ bool v8::V8::Initialize(const int build_config) {
   }
 
   i::V8::Initialize();
+  if (!cppgc::IsInitialized()) {
+    // cppgc::InitializeProcess() has to becalled after V8::Initialize().
+    // V8::Initialize() triggers OS::Platform initialization code that is needed
+    // by the default page allocator on Fuchsia to allocate memory correctly.
+    cppgc::InitializeProcess(i::V8::GetCurrentPlatform()->GetPageAllocator());
+  }
   return true;
 }
 
@@ -6900,6 +6907,8 @@ bool MayContainObjectsToFreeze(i::InstanceType obj_type) {
   if (i::InstanceTypeChecker::IsString(obj_type)) return false;
   // SharedFunctionInfo is cross-context so it shouldn't be frozen.
   if (i::InstanceTypeChecker::IsSharedFunctionInfo(obj_type)) return false;
+  // All TemplateInfo objects are cross-context so they shouldn't be frozen.
+  if (i::InstanceTypeChecker::IsTemplateInfo(obj_type)) return false;
   return true;
 }
 
@@ -7505,6 +7514,13 @@ bool FunctionTemplate::IsLeafTemplateForApiObject(
   return self->IsLeafTemplateForApiObject(object);
 }
 
+void FunctionTemplate::SealAndPrepareForPromotionToReadOnly() {
+  auto self = Utils::OpenDirectHandle(this);
+  i::Isolate* i_isolate = self->GetIsolateChecked();
+  i::FunctionTemplateInfo::SealAndPrepareForPromotionToReadOnly(i_isolate,
+                                                                self);
+}
+
 Local<External> v8::External::New(Isolate* v8_isolate, void* value) {
   static_assert(sizeof(value) == sizeof(i::Address));
   // Nullptr is not allowed here because serialization/deserialization of
@@ -7521,7 +7537,9 @@ Local<External> v8::External::New(Isolate* v8_isolate, void* value) {
 }
 
 void* External::Value() const {
-  return i::Cast<i::JSExternalObject>(*Utils::OpenDirectHandle(this))->value();
+  i::IsolateForSandbox isolate = i::GetCurrentIsolateForSandbox();
+  return i::Cast<i::JSExternalObject>(*Utils::OpenDirectHandle(this))
+      ->value(isolate);
 }
 
 // anonymous namespace for string creation helper functions
@@ -8665,6 +8683,10 @@ MaybeLocal<Promise::Resolver> Promise::Resolver::New(Local<Context> context) {
   Local<Promise::Resolver> result;
   has_exception = !ToLocal<Promise::Resolver>(
       i_isolate->factory()->NewJSPromise(), &result);
+  // Also check if promise hooks set an exception.
+  // TODO(clemensb): Should `Factory::NewJSPromise()` return a MaybeHandle
+  // instead?
+  has_exception |= i_isolate->has_exception();
   RETURN_ON_FAILED_EXECUTION(Promise::Resolver);
   RETURN_ESCAPED(result);
 }
@@ -9704,6 +9726,20 @@ IsolateGroup::IsolateGroup(i::IsolateGroup*&& isolate_group)
   DCHECK_NOT_NULL(isolate_group_);
 }
 
+IsolateGroup::IsolateGroup(const IsolateGroup& other)
+    : isolate_group_(other.isolate_group_) {
+  if (isolate_group_) isolate_group_->Acquire();
+}
+
+IsolateGroup& IsolateGroup::operator=(const IsolateGroup& other) {
+  if (this != &other && isolate_group_ != other.isolate_group_) {
+    if (isolate_group_) isolate_group_->Release();
+    isolate_group_ = other.isolate_group_;
+    if (isolate_group_) isolate_group_->Acquire();
+  }
+  return *this;
+}
+
 IsolateGroup::~IsolateGroup() {
   if (isolate_group_) {
     isolate_group_->Release();
@@ -9887,16 +9923,6 @@ void Isolate::SetEmbedderRootsHandler(EmbedderRootsHandler* handler) {
   i_isolate->heap()->SetEmbedderRootsHandler(handler);
 }
 
-void Isolate::AttachCppHeap(CppHeap* cpp_heap) {
-  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(this);
-  i_isolate->heap()->AttachCppHeap(cpp_heap);
-}
-
-void Isolate::DetachCppHeap() {
-  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(this);
-  i_isolate->heap()->DetachCppHeap();
-}
-
 CppHeap* Isolate::GetCppHeap() const {
   const i::Isolate* i_isolate = reinterpret_cast<const i::Isolate*>(this);
   return i_isolate->heap()->cpp_heap();
@@ -9948,6 +9974,10 @@ void Isolate::RequestGarbageCollectionForTesting(GarbageCollectionType type) {
   Utils::ApiCheck(i::v8_flags.expose_gc,
                   "v8::Isolate::RequestGarbageCollectionForTesting",
                   "Must use --expose-gc");
+  // The embedder must have entered the isolate (via `Isolate::Scope`) such that
+  // the GC can get the "current" isolate from TLS.
+  DCHECK_EQ(this, Isolate::TryGetCurrent());
+
   if (type == kMinorGarbageCollection) {
     reinterpret_cast<i::Isolate*>(this)->heap()->CollectGarbage(
         i::NEW_SPACE, i::GarbageCollectionReason::kTesting,
@@ -10057,11 +10087,19 @@ void Isolate::Initialize(Isolate* v8_isolate,
   i_isolate->set_api_external_references(params.external_references);
   i_isolate->set_allow_atomics_wait(params.allow_atomics_wait);
 
-  i_isolate->heap()->ConfigureHeap(params.constraints, params.cpp_heap);
+  CppHeap* cpp_heap = params.cpp_heap;
+  if (!cpp_heap) {
+    cpp_heap =
+        CppHeap::Create(i::V8::GetCurrentPlatform(), CppHeapCreateParams{{}})
+            .release();
+  }
+
+  i_isolate->heap()->ConfigureHeap(params.constraints, cpp_heap);
   if (params.constraints.stack_limit() != nullptr) {
     uintptr_t limit =
         reinterpret_cast<uintptr_t>(params.constraints.stack_limit());
     i_isolate->stack_guard()->SetStackLimit(limit);
+    i_isolate->set_stack_size(base::Stack::GetStackStart() - limit);
   }
 
   // TODO(v8:2487): Once we got rid of Isolate::Current(), we can remove this.
@@ -10486,15 +10524,6 @@ void Isolate::RemoveCallCompletedCallback(CallCompletedCallback callback) {
   i_isolate->RemoveCallCompletedCallback(callback);
 }
 
-void Isolate::AtomicsWaitWakeHandle::Wake() {
-  reinterpret_cast<i::AtomicsWaitWakeHandle*>(this)->Wake();
-}
-
-void Isolate::SetAtomicsWaitCallback(AtomicsWaitCallback callback, void* data) {
-  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(this);
-  i_isolate->SetAtomicsWaitCallback(callback, data);
-}
-
 void Isolate::SetPromiseHook(PromiseHook hook) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(this);
   i_isolate->SetPromiseHook(hook);
@@ -10708,6 +10737,7 @@ void Isolate::SetStackLimit(uintptr_t stack_limit) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(this);
   CHECK(stack_limit);
   i_isolate->stack_guard()->SetStackLimit(stack_limit);
+  i_isolate->set_stack_size(base::Stack::GetStackStart() - stack_limit);
 }
 
 void Isolate::GetCodeRange(void** start, size_t* length_in_bytes) {

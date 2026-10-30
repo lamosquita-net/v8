@@ -585,6 +585,8 @@ class SharedFunctionInfo
   // closest outer class scope.
   DECL_BOOLEAN_ACCESSORS(private_name_lookup_skips_outer_class)
 
+  // Indicates that the shared function info was live-edited.
+  DECL_BOOLEAN_ACCESSORS(live_edited)
   // Indicates that a class initializer's enclosing scope allowed await.
   DECL_BOOLEAN_ACCESSORS(class_initializer_allows_await)
 

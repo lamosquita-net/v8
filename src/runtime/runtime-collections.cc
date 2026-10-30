@@ -25,8 +25,7 @@ RUNTIME_FUNCTION(Runtime_OrderedHashSetGrow) {
   MaybeHandle<OrderedHashSet> table_candidate =
       OrderedHashSet::EnsureCapacityForAdding(isolate, table);
   if (!table_candidate.ToHandle(&table)) {
-    // FlyWeb: replace the RangeError already thrown by Allocate() instead of
-    // throwing a second exception on top of it (v8 92aba703, crbug 405910175).
+    // Replace generic RangeError exception with a more descriptive one.
     DCHECK(isolate->has_exception());
     isolate->clear_exception();
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -43,8 +42,7 @@ RUNTIME_FUNCTION(Runtime_SetGrow) {
   MaybeHandle<OrderedHashSet> table_candidate =
       OrderedHashSet::EnsureCapacityForAdding(isolate, table);
   if (!table_candidate.ToHandle(&table)) {
-    // FlyWeb: replace the RangeError already thrown by Allocate() instead of
-    // throwing a second exception on top of it (v8 92aba703, crbug 405910175).
+    // Replace generic RangeError exception with a more descriptive one.
     DCHECK(isolate->has_exception());
     isolate->clear_exception();
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -92,8 +90,7 @@ RUNTIME_FUNCTION(Runtime_MapGrow) {
   MaybeHandle<OrderedHashMap> table_candidate =
       OrderedHashMap::EnsureCapacityForAdding(isolate, table);
   if (!table_candidate.ToHandle(&table)) {
-    // FlyWeb: replace the RangeError already thrown by Allocate() instead of
-    // throwing a second exception on top of it (v8 92aba703, crbug 405910175).
+    // Replace generic RangeError exception with a more descriptive one.
     DCHECK(isolate->has_exception());
     isolate->clear_exception();
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -113,8 +110,7 @@ RUNTIME_FUNCTION(Runtime_OrderedHashMapGrow) {
   MaybeHandle<OrderedHashMap> table_candidate =
       OrderedHashMap::EnsureCapacityForAdding(isolate, table);
   if (!table_candidate.ToHandle(&table)) {
-    // FlyWeb: replace the RangeError already thrown by Allocate() instead of
-    // throwing a second exception on top of it (v8 92aba703, crbug 405910175).
+    // Replace generic RangeError exception with a more descriptive one.
     DCHECK(isolate->has_exception());
     isolate->clear_exception();
     THROW_NEW_ERROR_RETURN_FAILURE(

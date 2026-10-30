@@ -50,8 +50,9 @@ class V8_EXPORT Version {
   // af7d1483a5 changes bytecode), 23 = engine level 135 (V8 13.5 with the
   // same backports), 24 = seg/fs36-v8 (FS.36: post-135 merges, several of
   // which change bytecode and parsing, e.g. hole check elision on break and
-  // continue, class member initializer reparse).
-  static constexpr int kFlyWebCacheEpoch = 24;
+  // continue, class member initializer reparse), 25 = engine level 136 (V8
+  // 13.6 with the same backports).
+  static constexpr int kFlyWebCacheEpoch = 25;
   static uint32_t Hash() {
     return static_cast<uint32_t>(base::hash_combine(
         major_, minor_, build_, patch_, kFlyWebCacheEpoch));

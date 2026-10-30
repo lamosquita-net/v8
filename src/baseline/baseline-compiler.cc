@@ -269,21 +269,16 @@ const int kAverageBytecodeToInstructionRatio = 7;
 #endif
 std::unique_ptr<AssemblerBuffer> AllocateBuffer(
     DirectHandle<BytecodeArray> bytecodes) {
-  base::CheckedNumeric<int> estimated_size;
+  int estimated_size;
   {
     DisallowHeapAllocation no_gc;
     estimated_size = BaselineCompiler::EstimateInstructionSize(*bytecodes);
   }
-  int raw_estimated_size;
-  if (!estimated_size.AssignIfValid(&raw_estimated_size) ||
-      raw_estimated_size > Assembler::kMaximalBufferSize) {
+  // FlyWeb: upstream ebf970d8a3; RoundUp() of a saturated size would overflow.
+  if (estimated_size > Assembler::kMaximalBufferSize - 4 * KB) {
     V8::FatalProcessOutOfMemory(nullptr, "BaselineCompiler::AllocateBuffer");
   }
-  int rounded_size = RoundUp(raw_estimated_size, 4 * KB);
-  if (rounded_size > Assembler::kMaximalBufferSize) {
-    V8::FatalProcessOutOfMemory(nullptr, "BaselineCompiler::AllocateBuffer");
-  }
-  return NewAssemblerBuffer(rounded_size);
+  return NewAssemblerBuffer(RoundUp(estimated_size, 4 * KB));
 }
 }  // namespace
 
@@ -364,10 +359,13 @@ MaybeHandle<Code> BaselineCompiler::Build() {
   return code_builder.TryBuild();
 }
 
-base::CheckedNumeric<int> BaselineCompiler::EstimateInstructionSize(
-    Tagged<BytecodeArray> bytecode) {
-  return base::CheckedNumeric<int>(bytecode->length()) *
-         kAverageBytecodeToInstructionRatio;
+int BaselineCompiler::EstimateInstructionSize(Tagged<BytecodeArray> bytecode) {
+  // FlyWeb: upstream ebf970d8a3 (crbug.com/515431687) without
+  // base::CheckedNumeric, which 13.6 does not have: saturate instead of
+  // overflowing int for very large bytecode arrays.
+  int64_t size = static_cast<int64_t>(bytecode->length()) *
+                 kAverageBytecodeToInstructionRatio;
+  return size > kMaxInt ? kMaxInt : static_cast<int>(size);
 }
 
 interpreter::Register BaselineCompiler::RegisterOperand(int operand_index) {

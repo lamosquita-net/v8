@@ -6,7 +6,6 @@
 #define V8_BASELINE_BASELINE_COMPILER_H_
 
 #include "src/base/logging.h"
-#include "src/base/numerics/checked_math.h"
 #include "src/base/pointer-with-payload.h"
 #include "src/base/threaded-list.h"
 #include "src/base/vlq.h"
@@ -56,8 +55,7 @@ class BaselineCompiler {
 
   void GenerateCode();
   MaybeHandle<Code> Build();
-  static base::CheckedNumeric<int> EstimateInstructionSize(
-      Tagged<BytecodeArray> bytecode);
+  static int EstimateInstructionSize(Tagged<BytecodeArray> bytecode);
 
  private:
   void Prologue();

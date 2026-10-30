@@ -3500,7 +3500,15 @@ void ReloadParentStack(MacroAssembler* masm, Register promise,
   // Switch stack!
   SwitchStacks(masm, active_stack, true,
                {promise, return_value, context, parent});
+  // FlyWeb: v8 3137a74400 (crbug 561655173). The parent is either the initial
+  // promising wrapper (pops no arguments) or WasmResume/WasmReject (pop the
+  // receiver and one argument): return through the parent's own return
+  // address instead of falling through to the wrapper's epilogue.
+  DCHECK_NE(tmp1, tmp2);
+  __ movq(tmp1, MemOperand(parent, wasm::kStackPcOffset));
   LoadJumpBuffer(masm, parent, false, wasm::JumpBuffer::Inactive);
+  __ movq(MemOperand(rbp, StackSwitchFrameConstants::kParentReturnAddressOffset),
+          tmp1);
 }
 
 // Loads the context field of the WasmTrustedInstanceData or WasmImportData
@@ -3624,6 +3632,8 @@ void SwitchBackAndReturnPromise(MacroAssembler* masm, Register tmp1,
   }
 
   __ bind(return_promise);
+  // The initial wrapper and a resume callback have different argument cleanup.
+  __ jmp(MemOperand(rbp, StackSwitchFrameConstants::kParentReturnAddressOffset));
 }
 
 void GenerateExceptionHandlingLandingPad(MacroAssembler* masm,
@@ -3847,6 +3857,7 @@ void JSToWasmWrapperHelper(MacroAssembler* masm, wasm::Promise mode) {
   Label return_promise;
   if (stack_switch) {
     SwitchBackAndReturnPromise(masm, r8, rdi, mode, &return_promise);
+    __ Trap();  // Unreachable.
   }
   __ bind(&suspend);
   __ endbr64();
@@ -3999,18 +4010,20 @@ namespace {
 // forwards the value, the onRejected variant throws the value.
 
 void Generate_WasmResumeHelper(MacroAssembler* masm, wasm::OnResume on_resume) {
+  // FlyWeb: v8 49a1dbeb1b (crbug 561655173). WasmResume/WasmReject pop exactly
+  // the receiver and one argument; a direct call with another arity (sandbox
+  // corruption) would misalign the stack on return.
+  __ cmpq(kJavaScriptCallArgCountRegister, Immediate(JSParameterCount(1)));
+  __ Check(equal, AbortReason::kJSSignatureMismatch);
+
   __ EnterFrame(StackFrame::STACK_SWITCH);
 
-  Register param_count = rax;
-  __ decq(param_count);                    // Exclude receiver.
   Register closure = kJSFunctionRegister;  // rdi
 
   __ AllocateStackSpace(StackSwitchFrameConstants::kNumSpillSlots *
                         kSystemPointerSize);
   // Set a sentinel value for the spill slots visited by the GC.
   ResetStackSwitchFrameStackSlots(masm);
-
-  param_count = no_reg;
 
   // -------------------------------------------
   // Load suspender from closure.

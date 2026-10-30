@@ -988,6 +988,19 @@ void switch_stacks(Isolate* isolate, wasm::StackMemory* from) {
 }
 
 void return_switch(Isolate* isolate, wasm::StackMemory* from) {
+  // FlyWeb: v8 54cf5fa964 (crbug 485784597). Once the stack returns and is
+  // moved to the stack pool it may be freed at any point; the owning
+  // WasmSuspenderObject should be unreachable, but a sandbox corruption can
+  // keep it alive and reuse it. Clear its external stack pointer.
+  Tagged<Object> active_suspender =
+      isolate->root(RootIndex::kActiveSuspender);
+  if (IsWasmSuspenderObject(active_suspender)) {
+    Tagged<WasmSuspenderObject> suspender =
+        Cast<WasmSuspenderObject>(active_suspender);
+    if (suspender->stack(isolate) == from) {
+      suspender->set_stack(isolate, nullptr);
+    }
+  }
   isolate->SwitchStacks(from, isolate->isolate_data()->active_stack());
   isolate->RetireWasmStack(from);
 }

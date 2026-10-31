@@ -52,8 +52,11 @@ class V8_EXPORT Version {
   // which change bytecode and parsing, e.g. hole check elision on break and
   // continue, class member initializer reparse), 25 = engine level 136 (V8
   // 13.6 with the same backports), 26 = seg/fs37-v8 (FS.37: post-136
-  // merges; 848d7f4122 changes the bytecode of `await using` in for loops).
-  static constexpr int kFlyWebCacheEpoch = 27;
+  // merges; 848d7f4122 changes the bytecode of `await using` in for loops),
+  // 27 = engine level 137 (V8 13.7 with the same backports), 28 =
+  // seg/fs38-v8 (FS.38: post-137 merges; no bytecode change, but new
+  // builtins code and code cache checks).
+  static constexpr int kFlyWebCacheEpoch = 28;
   static uint32_t Hash() {
     return static_cast<uint32_t>(base::hash_combine(
         major_, minor_, build_, patch_, kFlyWebCacheEpoch));

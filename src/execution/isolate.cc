@@ -154,6 +154,7 @@
 #include "src/wasm/wasm-code-pointer-table-inl.h"
 #include "src/wasm/wasm-engine.h"
 #include "src/wasm/wasm-module.h"
+#include "src/wasm/wasm-objects-inl.h"
 #include "src/wasm/wasm-objects.h"
 
 #if V8_ENABLE_DRUMBRAKE
@@ -2289,6 +2290,21 @@ Tagged<Object> Isolate::UnwindAndFindHandler() {
         SBXCHECK_EQ(parent->jmpbuf()->state, wasm::JumpBuffer::Inactive);
         SwitchStacks(active_stack, parent);
         parent->jmpbuf()->state = wasm::JumpBuffer::Active;
+        // FlyWeb: v8 13c7629466 (crbug 501147587). The exception (e.g. a
+        // termination) escapes the suspender that owns this stack: clear its
+        // external stack pointer to avoid a UAF once the stack is pooled.
+        for (Tagged<Object> maybe_suspender =
+                 root(RootIndex::kActiveSuspender);
+             IsWasmSuspenderObject(maybe_suspender);
+             maybe_suspender =
+                 Cast<WasmSuspenderObject>(maybe_suspender)->parent()) {
+          Tagged<WasmSuspenderObject> suspender =
+              Cast<WasmSuspenderObject>(maybe_suspender);
+          if (suspender->stack(this) == active_stack) {
+            suspender->set_stack(this, nullptr);
+            break;
+          }
+        }
         RetireWasmStack(active_stack);
         active_stack = parent;
       }

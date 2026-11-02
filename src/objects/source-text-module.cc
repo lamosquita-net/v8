@@ -326,10 +326,18 @@ MaybeHandle<Cell> SourceTextModule::ResolveExportUsingStarExports(
 
     if (!unique_cell.is_null()) {
       // Found a unique star export for this name.
-      Handle<ObjectHashTable> exports(module->exports(), isolate);
-      DCHECK(IsTheHole(exports->Lookup(export_name), isolate));
-      exports = ObjectHashTable::Put(exports, export_name, unique_cell);
-      module->set_exports(*exports);
+      // FlyWeb: port of v8 137e7f93d7 (crbug 574038247). Only cache it while
+      // the module is still linking: once linked, its exports table may back
+      // a finalized JSModuleNamespace whose LoadIC handlers index into it.
+      // 13.8 has no deferred namespace and no setter check, so the
+      // ExportsFinalized() CHECK of upstream's set_exports() is done here.
+      if (module->status() <= kLinking) {
+        CHECK(!IsJSModuleNamespace(module->module_namespace()));
+        Handle<ObjectHashTable> exports(module->exports(), isolate);
+        DCHECK(IsTheHole(exports->Lookup(export_name), isolate));
+        exports = ObjectHashTable::Put(exports, export_name, unique_cell);
+        module->set_exports(*exports);
+      }
       return unique_cell;
     }
   }

@@ -55,8 +55,11 @@ class V8_EXPORT Version {
   // merges; 848d7f4122 changes the bytecode of `await using` in for loops),
   // 27 = engine level 137 (V8 13.7 with the same backports), 28 =
   // seg/fs38-v8 (FS.38: post-137 merges; no bytecode change, but new
-  // builtins code and code cache checks).
-  static constexpr int kFlyWebCacheEpoch = 29;
+  // builtins code and code cache checks), 29 = engine level 138 (V8 13.8
+  // with the same backports), 30 = seg/fs39-v8 (FS.39: post-138 merges; no
+  // bytecode change, but new Promise.any builtin code, the code cache FPU
+  // state and the redone 13.7 patches).
+  static constexpr int kFlyWebCacheEpoch = 30;
   static uint32_t Hash() {
     return static_cast<uint32_t>(base::hash_combine(
         major_, minor_, build_, patch_, kFlyWebCacheEpoch));

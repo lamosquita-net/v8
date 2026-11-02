@@ -5437,6 +5437,9 @@ bool MaglevGraphBuilder::CanTrackObjectChanges(ValueNode* receiver,
   if (!v8_flags.maglev_object_tracking) return false;
   if (!receiver->Is<InlinedAllocation>()) return false;
   InlinedAllocation* alloc = receiver->Cast<InlinedAllocation>();
+  // FlyWeb: port of v8 a068030f51 (crbug 495751197): the transitive check
+  // applies to stores too.
+  if (IsEscaping(graph_, alloc)) return false;
   if (mode == TrackObjectMode::kStore) {
     // If we have two objects A and B, such that A points to B (it contains B in
     // one of its field), we cannot change B without also changing A, even if
@@ -5445,7 +5448,6 @@ bool MaglevGraphBuilder::CanTrackObjectChanges(ValueNode* receiver,
         graph_->allocations_elide_map().end()) {
       return false;
     }
-    if (alloc->IsEscaping()) return false;
     // Ensure object is escaped if we are within a try-catch block. This is
     // crucial because a deoptimization point inside the catch handler could
     // re-materialize objects differently, depending on whether the throw
@@ -5454,9 +5456,6 @@ bool MaglevGraphBuilder::CanTrackObjectChanges(ValueNode* receiver,
     // the try-block started,  but for now, err on the side of caution and
     // always escape.
     if (IsInsideTryBlock()) return false;
-  } else {
-    DCHECK_EQ(mode, TrackObjectMode::kLoad);
-    if (IsEscaping(graph_, alloc)) return false;
   }
   // We don't support loop phis inside VirtualObjects, so any access inside a
   // loop should escape the object, except for objects that were created since
@@ -5957,7 +5956,7 @@ MaybeReduceResult MaglevGraphBuilder::TryBuildStoreField(
       broker()->dependencies()->DependOnNoSlackTrackingChange(*original_map);
     }
   } else if (access_info.IsFastDataConstant() &&
-             access_mode == compiler::AccessMode::kStore) {
+             access_mode != compiler::AccessMode::kStoreInLiteral) {
     return EmitUnconditionalDeopt(DeoptimizeReason::kStoreToConstant);
   }
 
@@ -6230,9 +6229,9 @@ MaybeReduceResult MaglevGraphBuilder::TryBuildNamedAccess(
                GetTaggedValue(GetAccumulator())},
               feedback_source);
         case compiler::AccessMode::kDefine:
+        case compiler::AccessMode::kStoreInLiteral:
           return {};
         case compiler::AccessMode::kHas:
-        case compiler::AccessMode::kStoreInLiteral:
           UNREACHABLE();
       }
     }
@@ -7987,6 +7986,16 @@ ReduceResult MaglevGraphBuilder::VisitSetNamedProperty() {
 
 ReduceResult MaglevGraphBuilder::VisitDefineNamedOwnProperty() {
   // DefineNamedOwnProperty <object> <name_index> <slot>
+  return VisitDefineNamedOwnPropertyHelper(false);
+}
+
+ReduceResult MaglevGraphBuilder::VisitDefineNamedOwnPropertyInLiteral() {
+  // DefineNamedOwnPropertyInLiteral <object> <name_index> <slot>
+  return VisitDefineNamedOwnPropertyHelper(true);
+}
+
+ReduceResult MaglevGraphBuilder::VisitDefineNamedOwnPropertyHelper(
+    bool in_literal) {
   ValueNode* object = LoadRegister(0);
   compiler::NameRef name = GetRefOperand<Name>(1);
   FeedbackSlot slot = GetSlotOperand(2);
@@ -8011,7 +8020,9 @@ ReduceResult MaglevGraphBuilder::VisitDefineNamedOwnProperty() {
     case compiler::ProcessedFeedback::kNamedAccess:
       RETURN_IF_DONE(TryBuildNamedAccess(
           object, object, processed_feedback.AsNamedAccess(), feedback_source,
-          compiler::AccessMode::kDefine, build_generic_access));
+          in_literal ? compiler::AccessMode::kStoreInLiteral
+                     : compiler::AccessMode::kDefine,
+          build_generic_access));
       break;
 
     default:
@@ -8774,8 +8785,10 @@ ReduceResult MaglevGraphBuilder::BuildEagerInlineCall(
       inner_graph_builder.current_interpreter_frame_.known_node_aspects());
   current_interpreter_frame_.set_virtual_objects(
       inner_graph_builder.current_interpreter_frame_.virtual_objects());
-  current_for_in_state.receiver_needs_map_check =
-      inner_graph_builder.current_for_in_state.receiver_needs_map_check;
+  if (inner_graph_builder.may_have_changed_maps()) {
+    may_have_changed_maps_ = true;
+    current_for_in_state.receiver_needs_map_check = true;
+  }
 
   // Resume execution using the final block of the inner builder.
   current_block_ = inner_graph_builder.current_block_;
@@ -9325,7 +9338,7 @@ MaybeReduceResult MaglevGraphBuilder::TryReduceArrayIteratorPrototypeNext(
     VirtualObject* array = iterated_object->Cast<InlinedAllocation>()->object();
     // TODO(victorgomes): Remove this once we track changes in the inlined
     // allocated object.
-    if (iterated_object->Cast<InlinedAllocation>()->IsEscaping()) {
+    if (IsEscaping(graph_, iterated_object->Cast<InlinedAllocation>())) {
       FAIL("allocation is escaping, map could have been changed");
     }
     // TODO(victorgomes): This effectively disable the optimization for `for-of`
@@ -9361,6 +9374,14 @@ MaybeReduceResult MaglevGraphBuilder::TryReduceArrayIteratorPrototypeNext(
   if (IsHoleyElementsKind(elements_kind) &&
       !broker()->dependencies()->DependOnNoElementsProtector()) {
     FAIL("no elements protector");
+  }
+
+  // FlyWeb: port of v8 811ebc89d5 (crbug 523884658). The map of an inlined
+  // array can still change behind our back (e.g. through
+  // `function.arguments`), so check it like upstream does when there is no
+  // map inference.
+  if (iterated_object->Is<InlinedAllocation>()) {
+    RETURN_IF_ABORT(BuildCheckMaps(iterated_object, base::VectorOf(maps)));
   }
 
   // Load the [[NextIndex]] from the {iterator}.
@@ -11713,7 +11734,7 @@ MaglevGraphBuilder::TryGetNonEscapingArgumentsObject(ValueNode* value) {
   }
   // TODO(victorgomes): We can probably loosen the IsNotEscaping requirement if
   // we keep track of the arguments object changes so far.
-  if (alloc->IsEscaping()) return {};
+  if (IsEscaping(graph_, alloc)) return {};
   VirtualObject* object = alloc->object();
   if (!object->has_static_map()) return {};
   // TODO(victorgomes): Support simple JSArray forwarding.

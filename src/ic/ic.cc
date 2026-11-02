@@ -1040,6 +1040,10 @@ MaybeObjectHandle LoadIC::ComputeHandler(LookupIterator* lookup) {
       DirectHandle<JSReceiver> holder = lookup->GetHolder<JSReceiver>();
       DCHECK_EQ(PropertyKind::kData, lookup->property_details().kind());
       Handle<Smi> smi_handler;
+      if (lookup->IsElement(*holder)) {
+        TRACE_HANDLER_STATS(isolate(), LoadIC_SlowStub);
+        return MaybeObjectHandle(LoadHandler::LoadSlow(isolate()));
+      }
       if (lookup->is_dictionary_holder()) {
         if (IsJSGlobalObject(*holder, isolate())) {
           // TODO(verwaest): Also supporting the global object as receiver is a
@@ -1055,9 +1059,6 @@ MaybeObjectHandle LoadIC::ComputeHandler(LookupIterator* lookup) {
         if (holder_is_lookup_start_object)
           return MaybeObjectHandle(smi_handler);
         TRACE_HANDLER_STATS(isolate(), LoadIC_LoadNormalFromPrototypeDH);
-      } else if (lookup->IsElement(*holder)) {
-        TRACE_HANDLER_STATS(isolate(), LoadIC_SlowStub);
-        return MaybeObjectHandle(LoadHandler::LoadSlow(isolate()));
       } else {
         DCHECK_EQ(PropertyLocation::kField,
                   lookup->property_details().location());
@@ -1251,14 +1252,8 @@ bool AllowConvertHoleElementToUndefined(Isolate* isolate,
       // the {receiver}s prototype is either the initial Object.prototype
       // or the initial Array.prototype, which are both guarded by the
       // "no elements" protector checked above.
-      DirectHandle<HeapObject> receiver_prototype(receiver_map->prototype(),
-                                                  isolate);
-      InstanceType prototype_type = receiver_prototype->map()->instance_type();
-      if (prototype_type == JS_OBJECT_PROTOTYPE_TYPE ||
-          (prototype_type == JS_ARRAY_TYPE &&
-           isolate->IsInCreationContext(
-               Cast<JSObject>(*receiver_prototype),
-               Context::INITIAL_ARRAY_PROTOTYPE_INDEX))) {
+      Tagged<HeapObject> receiver_prototype = receiver_map->prototype();
+      if (receiver_prototype->map()->IsMapInArrayPrototypeChain(isolate)) {
         return true;
       }
     }
@@ -1366,17 +1361,6 @@ KeyedAccessLoadMode GetUpdatedLoadModeForMap(Isolate* isolate,
 Handle<Object> KeyedLoadIC::LoadElementHandler(
     DirectHandle<Map> receiver_map, KeyedAccessLoadMode new_load_mode,
     MaybeDirectHandle<Map> maybe_transition_target) {
-  // Has a getter interceptor, or is any has and has a query interceptor.
-  if (receiver_map->has_indexed_interceptor() &&
-      (receiver_map->GetIndexedInterceptor()->has_getter() ||
-       (IsAnyHas() && receiver_map->GetIndexedInterceptor()->has_query())) &&
-      !receiver_map->GetIndexedInterceptor()->non_masking()) {
-    // TODO(jgruber): Update counter name.
-    TRACE_HANDLER_STATS(isolate(), KeyedLoadIC_LoadIndexedInterceptorStub);
-    return IsAnyHas() ? BUILTIN_CODE(isolate(), HasIndexedInterceptorIC)
-                      : BUILTIN_CODE(isolate(), LoadIndexedInterceptorIC);
-  }
-
   InstanceType instance_type = receiver_map->instance_type();
   if (instance_type < FIRST_NONSTRING_TYPE) {
     TRACE_HANDLER_STATS(isolate(), KeyedLoadIC_LoadIndexedStringDH);
@@ -1390,6 +1374,23 @@ Handle<Object> KeyedLoadIC::LoadElementHandler(
   if (instance_type == JS_PROXY_TYPE) {
     return LoadHandler::LoadProxy(isolate());
   }
+  if (receiver_map->is_access_check_needed()) {
+    TRACE_HANDLER_STATS(isolate(), KeyedLoadIC_SlowStub);
+    return LoadHandler::LoadSlow(isolate());
+  }
+
+  // Has a getter interceptor, or is any has and has a query interceptor.
+  if (receiver_map->has_indexed_interceptor() &&
+      (receiver_map->GetIndexedInterceptor()->has_getter() ||
+       (IsAnyHas() && receiver_map->GetIndexedInterceptor()->has_query())) &&
+      !receiver_map->GetIndexedInterceptor()->non_masking()) {
+    DCHECK(!receiver_map->is_access_check_needed());
+    // TODO(jgruber): Update counter name.
+    TRACE_HANDLER_STATS(isolate(), KeyedLoadIC_LoadIndexedInterceptorStub);
+    return IsAnyHas() ? BUILTIN_CODE(isolate(), HasIndexedInterceptorIC)
+                      : BUILTIN_CODE(isolate(), LoadIndexedInterceptorIC);
+  }
+
 #if V8_ENABLE_WEBASSEMBLY
   if (InstanceTypeChecker::IsWasmObject(instance_type)) {
     // TODO(jgruber): Update counter name.
@@ -1882,6 +1883,11 @@ MaybeDirectHandle<Object> StoreIC::Store(Handle<JSAny> object,
       if (!can_store.FromJust()) {
         return isolate()->factory()->undefined_value();
       }
+      // Restart the lookup iterator updated by CheckPrivateNameStore() for
+      // UpdateCaches() to handle access checks.
+      if (use_ic && IsAccessCheckNeeded(*object)) {
+        it.Restart();
+      }
     }
 
     // IC handling of private fields/symbols stores on JSProxy is not
@@ -2163,6 +2169,11 @@ MaybeObjectHandle StoreIC::ComputeHandler(LookupIterator* lookup) {
       DCHECK(!IsAccessCheckNeeded(*receiver) || lookup->name()->IsPrivate());
 
       DCHECK_EQ(PropertyKind::kData, lookup->property_details().kind());
+      // -------------- Elements (for TypedArrays) -------------
+      if (lookup->IsElement(*holder)) {
+        TRACE_HANDLER_STATS(isolate(), StoreIC_SlowStub);
+        return MaybeObjectHandle(StoreHandler::StoreSlow(isolate()));
+      }
       if (lookup->is_dictionary_holder()) {
         if (IsJSGlobalObject(*holder)) {
           TRACE_HANDLER_STATS(isolate(), StoreIC_StoreGlobalDH);
@@ -2176,12 +2187,6 @@ MaybeObjectHandle StoreIC::ComputeHandler(LookupIterator* lookup) {
 
         Handle<Smi> handler = StoreHandler::StoreNormal(isolate());
         return MaybeObjectHandle(handler);
-      }
-
-      // -------------- Elements (for TypedArrays) -------------
-      if (lookup->IsElement(*holder)) {
-        TRACE_HANDLER_STATS(isolate(), StoreIC_SlowStub);
-        return MaybeObjectHandle(StoreHandler::StoreSlow(isolate()));
       }
 
       // -------------- Fields --------------
@@ -2392,7 +2397,8 @@ Handle<Object> KeyedStoreIC::StoreElementHandler(
               isolate()),
       IsStoreInArrayLiteralIC());
 
-  if (!IsJSObjectMap(*receiver_map)) {
+  if (!IsJSObjectMap(*receiver_map) || receiver_map->is_access_check_needed() ||
+      receiver_map->IsMapInArrayPrototypeChain(isolate())) {
     // DefineKeyedOwnIC, which is used to define computed fields in instances,
     // should handled by the slow stub below instead of the proxy stub.
     if (IsJSProxyMap(*receiver_map) && !IsDefineKeyedOwnIC()) {

@@ -125,11 +125,7 @@ TF_BUILTIN(WasmFloat64ToNumber, WasmBuiltinsAssembler) {
 
 TF_BUILTIN(WasmFloat64ToString, WasmBuiltinsAssembler) {
   TNode<Float64T> val = UncheckedParameter<Float64T>(Descriptor::kValue);
-  // Having to allocate a HeapNumber is a bit unfortunate, but the subsequent
-  // runtime call will have to allocate a string anyway, which probably
-  // dwarfs the cost of one more small allocation here.
-  TNode<Number> tagged = ChangeFloat64ToTagged(val);
-  Return(NumberToString(tagged));
+  Return(Float64ToString(val));
 }
 
 TF_BUILTIN(JSToWasmLazyDeoptContinuation, WasmBuiltinsAssembler) {
@@ -164,71 +160,35 @@ TF_BUILTIN(WasmToJsWrapperInvalidSig, WasmBuiltinsAssembler) {
   Unreachable();
 }
 
-// FlyWeb: CVE-2026-87491 (v8 36079c36, crbug 543557673), same interface as
-// the old Torque builtin (it keeps the context parameter, so callers are
-// unchanged). Wasm uses private symbols (e.g. wasm_exception_tag_symbol) to
-// stamp certain objects. This builtin checks for presence of such symbols; it
-// is a specialization of "GetOwnProperty" behavior: if the object is not a
-// plain JS object or the property is not an own data property, return
-// undefined. To allow compilers to assume no side effects from this builtin,
-// it's particularly important to not invoke any getters.
-TF_BUILTIN(WasmGetOwnProperty, WasmBuiltinsAssembler) {
-  TNode<Object> object = Parameter<Object>(Descriptor::kObject);
-  TNode<Name> name = Parameter<Name>(Descriptor::kUniqueName);
+// Suppose we wanted to generate JavaScript constructor functions that wrap
+// exported Wasm functions as follows:
+//
+//   function MakeConstructor(wasm_instance, name) {
+//     let wasm_func = wasm_instance.exports[name];
+//     return function(...args) {
+//       return wasm_func(...args);
+//     }
+//   }
+//   let Foo = MakeConstructor(...);
+//   let foo = new Foo(1, 2, 3);
+//
+// This builtin models the code that these functions would have: it fetches the
+// target Wasm function from a Context slot and tail-calls to it with the
+// existing arguments on the stack. So when mass-creating such constructors,
+// we don't need to compile any bytecode, we only need to allocate an
+// appropriate Context and use this builtin as the code.
+TF_BUILTIN(WasmConstructorWrapper, WasmBuiltinsAssembler) {
+  auto argc = UncheckedParameter<Int32T>(Descriptor::kJSActualArgumentsCount);
+  TNode<Context> context = Parameter<Context>(Descriptor::kContext);
+  static constexpr int kSlot = wasm::kConstructorFunctionContextSlot;
+  TNode<JSFunction> target = CAST(LoadContextElementNoCell(context, kSlot));
+  TailCallBuiltin(Builtin::kCallFunction_ReceiverIsNullOrUndefined, context,
+                  target, argc);
+}
 
-  Label return_undefined(this, Label::kDeferred);
-
-  GotoIf(TaggedIsSmi(object), &return_undefined);
-  TNode<HeapObject> heap_object = CAST(object);
-
-  TNode<Map> map = LoadMap(heap_object);
-  TNode<Int32T> instance_type = LoadMapInstanceType(map);
-
-  GotoIfNot(IsJSReceiverInstanceType(instance_type), &return_undefined);
-  GotoIf(IsSpecialReceiverInstanceType(instance_type), &return_undefined);
-
-  TNode<JSObject> js_object = CAST(heap_object);
-
-  {
-    TVARIABLE(HeapObject, var_meta_storage);
-    TVARIABLE(IntPtrT, var_entry);
-    TVARIABLE(Object, var_value);
-    TVARIABLE(Uint32T, var_details);
-    Label if_found_fast(this), if_found_dict(this), got_value(this);
-
-    TryLookupPropertyInSimpleObject(js_object, map, name, &if_found_fast,
-                                    &if_found_dict, &var_meta_storage,
-                                    &var_entry, &return_undefined,
-                                    &return_undefined);
-
-    BIND(&if_found_fast);
-    {
-      TNode<DescriptorArray> descriptors = CAST(var_meta_storage.value());
-      LoadPropertyFromFastObject(js_object, map, descriptors, var_entry.value(),
-                                 &var_details, &var_value);
-      Goto(&got_value);
-    }
-
-    BIND(&if_found_dict);
-    {
-      TNode<PropertyDictionary> dictionary = CAST(var_meta_storage.value());
-      LoadPropertyFromDictionary(dictionary, var_entry.value(), &var_details,
-                                 &var_value);
-      Goto(&got_value);
-    }
-
-    BIND(&got_value);
-    {
-      TNode<Uint32T> kind =
-          DecodeWord32<PropertyDetails::KindField>(var_details.value());
-      constexpr int kData = static_cast<int>(PropertyKind::kData);
-      GotoIfNot(Word32Equal(kind, Int32Constant(kData)), &return_undefined);
-      Return(var_value.value());
-    }
-  }
-
-  BIND(&return_undefined);
-  Return(UndefinedConstant());
+TNode<BoolT> WasmBuiltinsAssembler::InSharedSpace(TNode<HeapObject> object) {
+  TNode<IntPtrT> address = BitcastTaggedToWord(object);
+  return IsPageFlagSet(address, MemoryChunk::kInSharedHeap);
 }
 
 #include "src/codegen/undef-code-stub-assembler-macros.inc"

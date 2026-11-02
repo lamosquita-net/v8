@@ -9,16 +9,18 @@
 #error This header should only be included if WebAssembly is enabled.
 #endif  // !V8_ENABLE_WEBASSEMBLY
 
-#include <unordered_map>
+#include <unordered_set>
 
 #include "src/base/bounds.h"
 #include "src/base/hashing.h"
+#include "src/base/platform/mutex.h"
+#include "src/wasm/struct-types.h"
 #include "src/wasm/value-type.h"
-#include "src/wasm/wasm-module.h"
 
 namespace v8::internal::wasm {
 
 class CanonicalTypeNamesProvider;
+struct WasmModule;
 
 // We use ValueType instances constructed from canonical type indices, so we
 // can't let them get bigger than what we have storage space for.
@@ -558,9 +560,12 @@ class TypeCanonicalizer {
 
   std::vector<CanonicalTypeIndex> canonical_supertypes_;
   // Set of all known canonical recgroups of size >=2.
-  std::unordered_set<CanonicalGroup> canonical_groups_;
+  std::unordered_set<CanonicalGroup, base::hash<CanonicalGroup>>
+      canonical_groups_;
   // Set of all known canonical recgroups of size 1.
-  std::unordered_set<CanonicalSingletonGroup> canonical_singleton_groups_;
+  std::unordered_set<CanonicalSingletonGroup,
+                     base::hash<CanonicalSingletonGroup>>
+      canonical_singleton_groups_;
   // Maps canonical indices back to the types.
   CanonicalTypeVector canonical_types_;
   AccountingAllocator allocator_;

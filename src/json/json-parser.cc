@@ -319,7 +319,7 @@ JsonParser<Char>::JsonParser(Isolate* isolate, Handle<String> source)
     source_ = String::Flatten(isolate, source);
   }
 
-  if (StringShape(*source_, cage_base).IsExternal()) {
+  if (StringShape(*source_).IsExternal()) {
     chars_ =
         static_cast<const Char*>(Cast<SeqExternalString>(*source_)->GetChars());
     chars_may_relocate_ = false;
@@ -638,7 +638,7 @@ class FoldedMutableHeapNumberAllocation {
  public:
   // TODO(leszeks): If allocation alignment is ever enabled, we'll need to add
   // padding fillers between heap numbers.
-  static_assert(!USE_ALLOCATION_ALIGNMENT_BOOL);
+  static_assert(!USE_ALLOCATION_ALIGNMENT_HEAP_NUMBER_BOOL);
 
   FoldedMutableHeapNumberAllocation(Isolate* isolate, int count) {
     if (count == 0) return;
@@ -1477,6 +1477,190 @@ V8_INLINE MaybeHandle<Object> JsonParser<Char>::ParseJsonValueRecursive(
 }
 
 template <typename Char>
+bool JsonParser<Char>::FastKeyMatch(const uint8_t* key_chars,
+                                    uint32_t key_length) {
+  return key_length < remaining_chars() && *(cursor_ + key_length) == '"' &&
+         CompareCharsEqual(key_chars, cursor_, key_length);
+}
+
+template <typename Char>
+bool JsonParser<Char>::ParseJsonPropertyValue(const JsonString& key) {
+  ExpectNext(JsonToken::COLON,
+             MessageTemplate::kJsonParseExpectedColonAfterPropertyName);
+  Handle<Object> value;
+  if (V8_UNLIKELY(!ParseJsonValueRecursive().ToHandle(&value))) return false;
+  property_stack_.emplace_back(key, value);
+  return true;
+}
+
+namespace {
+
+const uint8_t* GetFastKeyChars(Isolate* isolate, Tagged<String> key,
+                               Tagged<Map> map,
+                               const DisallowGarbageCollection& no_gc) {
+  DCHECK(InstanceTypeChecker::IsOneByteString(map));
+#if V8_STATIC_ROOTS_BOOL
+  ReadOnlyRoots roots(isolate);
+  if (map == roots.internalized_one_byte_string_map()) {
+    return Cast<SeqOneByteString>(key)->GetChars(no_gc);
+  } else {
+    DCHECK(map == roots.external_internalized_one_byte_string_map() ||
+           map == roots.uncached_external_internalized_one_byte_string_map());
+    return Cast<ExternalOneByteString>(key)->GetChars();
+  }
+#else
+  InstanceType instance_type = map->instance_type();
+  switch (instance_type) {
+    case INTERNALIZED_ONE_BYTE_STRING_TYPE:
+      return Cast<SeqOneByteString>(key)->GetChars(no_gc);
+    case EXTERNAL_INTERNALIZED_ONE_BYTE_STRING_TYPE:
+    case UNCACHED_EXTERNAL_INTERNALIZED_ONE_BYTE_STRING_TYPE:
+      return Cast<ExternalOneByteString>(key)->GetChars();
+    default:
+      UNREACHABLE();
+  }
+#endif
+}
+
+}  // namespace
+
+template <typename Char>
+template <DescriptorArray::FastIterableState fast_iterable_state>
+bool JsonParser<Char>::ParseJsonObjectProperties(
+    JsonContinuation* cont, MessageTemplate first_token_msg,
+    Handle<DescriptorArray> descriptors) {
+  using FastIterableState = DescriptorArray::FastIterableState;
+  if constexpr (fast_iterable_state == FastIterableState::kJsonSlow) {
+    do {
+      ExpectNext(JsonToken::STRING, first_token_msg);
+      first_token_msg =
+          MessageTemplate::kJsonParseExpectedDoubleQuotedPropertyName;
+      JsonString key = ScanJsonPropertyKey(cont);
+      if (V8_UNLIKELY(!ParseJsonPropertyValue(key))) return false;
+    } while (Check(JsonToken::COMMA));
+  } else {
+    DCHECK_GT(descriptors->number_of_descriptors(), 0);
+    InternalIndex idx{0};
+    do {
+      ExpectNext(JsonToken::STRING, first_token_msg);
+      first_token_msg =
+          MessageTemplate::kJsonParseExpectedDoubleQuotedPropertyName;
+      bool key_match;
+      if constexpr (fast_iterable_state == FastIterableState::kJsonFast) {
+        uint32_t key_length;
+        {
+          DisallowGarbageCollection no_gc;
+          Tagged<String> expected_key = Cast<String>(descriptors->GetKey(idx));
+          Tagged<Map> key_map = expected_key->map();
+          // Fast iterable keys are guaranteed to be 1-byte.
+          const uint8_t* expected_chars =
+              GetFastKeyChars(isolate_, expected_key, key_map, no_gc);
+          key_length = expected_key->length();
+          key_match = FastKeyMatch(expected_chars, key_length);
+        }
+        if (V8_LIKELY(key_match)) {
+          JsonString key =
+              JsonString(position(), key_length, false, true, false);
+          ++idx;
+          cursor_ += key_length + 1 /* double quote */;
+          if (V8_UNLIKELY(!ParseJsonPropertyValue(key))) return false;
+        } else {
+          JsonString key = ScanJsonPropertyKey(cont);
+          if (!key.is_index()) {
+            // Feedback doesn't match. Finish processing the current property
+            // and continue in slow-path if we have more properties.
+            if (V8_UNLIKELY(!ParseJsonPropertyValue(key))) return false;
+            if (Check(JsonToken::COMMA)) {
+              return ParseJsonObjectProperties<FastIterableState::kJsonSlow>(
+                  cont, first_token_msg, {});
+            }
+            return true;
+          }
+          if (V8_UNLIKELY(!ParseJsonPropertyValue(key))) return false;
+        }
+      } else {
+        DCHECK_EQ(fast_iterable_state, FastIterableState::kUnknown);
+        JsonString key = ScanJsonPropertyKey(cont);
+        // Indices don't participate in fast iterable key checks.
+        if (key.is_index()) {
+          if (V8_UNLIKELY(!ParseJsonPropertyValue(key))) return false;
+          continue;
+        }
+        // Check if the key is fast iterable.
+        // Some of the checks below are not relevant for the parser, but are
+        // requirements for fast iterable keys in general (e.g. for
+        // JSON.stringify).
+        Tagged<Name> property_name = descriptors->GetKey(idx);
+        bool is_slow = key.has_escape();
+        // Check that the property is enumerable and located in field.
+        PropertyDetails details = descriptors->GetDetails(idx);
+        if (V8_UNLIKELY(details.IsDontEnum() ||
+                        details.location() != PropertyLocation::kField)) {
+          is_slow = true;
+        }
+        // Symbol property keys are slow.
+        if (V8_UNLIKELY(IsSymbol(property_name))) {
+          is_slow = true;
+        }
+
+        key_match = false;
+        if (V8_LIKELY(!is_slow)) {
+          DisallowGarbageCollection no_gc;
+          // Property key is known to be fast so far, so it is guaranteed to
+          // be a string.
+          Tagged<String> expected_key = Cast<String>(property_name);
+          Tagged<Map> key_map = expected_key->map();
+          if (InstanceTypeChecker::IsTwoByteString(key_map)) {
+            // Two-byte keys are slow.
+            is_slow = true;
+          } else {
+            const uint8_t* expected_chars =
+                GetFastKeyChars(isolate_, expected_key, key_map, no_gc);
+            const uint32_t key_length = expected_key->length();
+            key_match = FastKeyMatch(expected_chars, key_length);
+          }
+        }
+
+        if (V8_UNLIKELY(is_slow)) {
+          // The key is not fast iterable. Mark it as slow in the descriptor
+          // array.
+          descriptors->set_fast_iterable(FastIterableState::kJsonSlow);
+        }
+
+        // Finish parsing the property.
+        if (V8_UNLIKELY(!ParseJsonPropertyValue(key))) return false;
+
+        // If key is not fast iterable or doesn't match the feedback, we
+        // continue on the slow-path.
+        if (V8_UNLIKELY(is_slow || !key_match)) {
+          if (Check(JsonToken::COMMA)) {
+            return ParseJsonObjectProperties<FastIterableState::kJsonSlow>(
+                cont, first_token_msg, {});
+          }
+          // No more properties to scan, we are done.
+          return true;
+        }
+        ++idx;
+      }
+    } while (idx < InternalIndex(descriptors->number_of_descriptors()) &&
+             Check(JsonToken::COMMA));
+    if constexpr (fast_iterable_state == FastIterableState::kUnknown) {
+      if (idx == InternalIndex(descriptors->number_of_descriptors())) {
+        descriptors->set_fast_iterable_if(FastIterableState::kJsonFast,
+                                          FastIterableState::kUnknown);
+      }
+    }
+    // Additional, unknown properties. Scan them slow.
+    if (Check(JsonToken::COMMA)) {
+      return ParseJsonObjectProperties<FastIterableState::kJsonSlow>(
+          cont, first_token_msg, descriptors);
+    }
+  }
+
+  return true;
+}
+
+template <typename Char>
 MaybeHandle<Object> JsonParser<Char>::ParseJsonObject(Handle<Map> feedback) {
   {
     StackLimitCheck check(isolate_);
@@ -1492,22 +1676,41 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonObject(Handle<Map> feedback) {
 
   JsonContinuation cont(isolate_, JsonContinuation::kObjectProperty,
                         property_stack_.size());
-  bool first = true;
-  do {
-    if (V8_UNLIKELY(!ExpectNext(
-        JsonToken::STRING,
-        first ? MessageTemplate::kJsonParseExpectedPropNameOrRBrace
-              : MessageTemplate::kJsonParseExpectedDoubleQuotedPropertyName))) return {};
-    JsonString key = ScanJsonPropertyKey(&cont);
-    if (V8_UNLIKELY(!ExpectNext(JsonToken::COLON,
-               MessageTemplate::kJsonParseExpectedColonAfterPropertyName))) return {};
-    Handle<Object> value;
-    if (V8_UNLIKELY(!ParseJsonValueRecursive().ToHandle(&value))) return {};
-    property_stack_.emplace_back(key, value);
-    first = false;
-  } while (Check(JsonToken::COMMA));
+  bool success;
+  using FastIterableState = DescriptorArray::FastIterableState;
+  const MessageTemplate first_token_msg =
+      MessageTemplate::kJsonParseExpectedPropNameOrRBrace;
+  if (!feedback.is_null()) {
+    Handle<DescriptorArray> descriptors =
+        handle(feedback->instance_descriptors(), isolate_);
+    if (*descriptors == ReadOnlyRoots(isolate_).empty_descriptor_array()) {
+      success = ParseJsonObjectProperties<FastIterableState::kJsonSlow>(
+          &cont, first_token_msg, {});
+    } else {
+      switch (descriptors->fast_iterable()) {
+        case FastIterableState::kJsonFast:
+          success = ParseJsonObjectProperties<FastIterableState::kJsonFast>(
+              &cont, first_token_msg, descriptors);
+          break;
+        case FastIterableState::kJsonSlow:
+          success = ParseJsonObjectProperties<FastIterableState::kJsonSlow>(
+              &cont, first_token_msg, {});
+          break;
+        case FastIterableState::kUnknown:
+          success = ParseJsonObjectProperties<FastIterableState::kUnknown>(
+              &cont, first_token_msg, descriptors);
+          break;
+      }
+    }
+  } else {
+    success = ParseJsonObjectProperties<FastIterableState::kJsonSlow>(
+        &cont, first_token_msg, {});
+  }
+  if (V8_UNLIKELY(!success)) {
+    return {};
+  }
 
-  if (V8_UNLIKELY(!Expect(JsonToken::RBRACE, MessageTemplate::kJsonParseExpectedCommaOrRBrace))) return {};
+  Expect(JsonToken::RBRACE, MessageTemplate::kJsonParseExpectedCommaOrRBrace);
   Handle<Object> result = BuildJsonObject<false>(cont, feedback);
   property_stack_.resize(cont.index);
   return cont.scope.CloseAndEscape(result);
@@ -1553,8 +1756,8 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonArray() {
       SkipWhitespace();
       continue;
     } else {
-      if (V8_UNLIKELY(!Expect(JsonToken::RBRACK,
-             MessageTemplate::kJsonParseExpectedCommaOrRBrack))) return {};
+      Expect(JsonToken::RBRACK,
+             MessageTemplate::kJsonParseExpectedCommaOrRBrack);
       success = true;
       break;
     }
@@ -1622,7 +1825,7 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonArray() {
     element_stack_.emplace_back(value);
   }
 
-  if (V8_UNLIKELY(!Expect(JsonToken::RBRACK, MessageTemplate::kJsonParseExpectedCommaOrRBrack))) return {};
+  Expect(JsonToken::RBRACK, MessageTemplate::kJsonParseExpectedCommaOrRBrack);
   Handle<Object> result = BuildJsonArray(start);
   element_stack_.resize(start);
   return handle_scope.CloseAndEscape(result);
@@ -1732,15 +1935,15 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonValue() {
                                   property_stack_.size());
 
           // Parse the property key.
-          if (V8_UNLIKELY(!ExpectNext(JsonToken::STRING,
-                     MessageTemplate::kJsonParseExpectedPropNameOrRBrace))) return {};
+          ExpectNext(JsonToken::STRING,
+                     MessageTemplate::kJsonParseExpectedPropNameOrRBrace);
           property_stack_.emplace_back(ScanJsonPropertyKey(&cont));
           if constexpr (should_track_json_source) {
             property_val_node_stack.emplace_back(Handle<Object>());
           }
 
-          if (V8_UNLIKELY(!ExpectNext(JsonToken::COLON,
-                     MessageTemplate::kJsonParseExpectedColonAfterPropertyName))) return {};
+          ExpectNext(JsonToken::COLON,
+                     MessageTemplate::kJsonParseExpectedColonAfterPropertyName);
 
           // Continue to start producing the first property value.
           continue;
@@ -1836,17 +2039,17 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonValue() {
 
           if (V8_LIKELY(Check(JsonToken::COMMA))) {
             // Parse the property key.
-            if (V8_UNLIKELY(!ExpectNext(
+            ExpectNext(
                 JsonToken::STRING,
-                MessageTemplate::kJsonParseExpectedDoubleQuotedPropertyName))) return {};
+                MessageTemplate::kJsonParseExpectedDoubleQuotedPropertyName);
 
             property_stack_.emplace_back(ScanJsonPropertyKey(&cont));
             if constexpr (should_track_json_source) {
               property_val_node_stack.emplace_back(Handle<Object>());
             }
-            if (V8_UNLIKELY(!ExpectNext(
+            ExpectNext(
                 JsonToken::COLON,
-                MessageTemplate::kJsonParseExpectedColonAfterPropertyName))) return {};
+                MessageTemplate::kJsonParseExpectedColonAfterPropertyName);
 
             // Break to start producing the subsequent property value.
             break;
@@ -1866,8 +2069,8 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonValue() {
             }
           }
           value = BuildJsonObject<should_track_json_source>(cont, feedback);
-          if (V8_UNLIKELY(!Expect(JsonToken::RBRACE,
-                 MessageTemplate::kJsonParseExpectedCommaOrRBrace))) return {};
+          Expect(JsonToken::RBRACE,
+                 MessageTemplate::kJsonParseExpectedCommaOrRBrace);
           // Return the object.
           if constexpr (should_track_json_source) {
             size_t start = cont.index;
@@ -1917,8 +2120,8 @@ MaybeHandle<Object> JsonParser<Char>::ParseJsonValue() {
           if (V8_LIKELY(Check(JsonToken::COMMA))) break;
 
           value = BuildJsonArray(cont.index);
-          if (V8_UNLIKELY(!Expect(JsonToken::RBRACK,
-                 MessageTemplate::kJsonParseExpectedCommaOrRBrack))) return {};
+          Expect(JsonToken::RBRACK,
+                 MessageTemplate::kJsonParseExpectedCommaOrRBrack);
           // Return the array.
           if constexpr (should_track_json_source) {
             size_t start = cont.index;

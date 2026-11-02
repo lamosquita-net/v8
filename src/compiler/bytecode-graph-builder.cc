@@ -301,7 +301,8 @@ class BytecodeGraphBuilder {
   OptionalScopeInfoRef TryGetScopeInfo();
   // Helper function to create a context extension check.
   Environment* CheckContextExtensionAtDepth(Environment* slow_environment,
-                                            uint32_t depth);
+                                            uint32_t depth,
+                                            ContextMode context_mode);
 
   // Helper function to create for-in mode from the recorded type feedback.
   ForInMode GetForInMode(FeedbackSlot slot);
@@ -1773,6 +1774,7 @@ void BytecodeGraphBuilder::VisitStaContextSlot() {
   Node* context =
       environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(0));
   NodeProperties::ReplaceContextInput(node, context);
+  environment()->RecordAfterState(node, Environment::kAttachFrameState);
 }
 
 void BytecodeGraphBuilder::VisitStaCurrentContextSlot() {
@@ -1780,7 +1782,9 @@ void BytecodeGraphBuilder::VisitStaCurrentContextSlot() {
   const Operator* op =
       javascript()->StoreContext(0, bytecode_iterator().GetIndexOperand(0));
   Node* value = environment()->LookupAccumulator();
-  NewNode(op, value);
+  Node* store = NewNode(op, value);
+  USE(store);
+  environment()->RecordAfterState(store, Environment::kAttachFrameState);
 }
 
 void BytecodeGraphBuilder::BuildLdaLookupSlot(TypeofMode typeof_mode) {
@@ -1805,9 +1809,12 @@ void BytecodeGraphBuilder::VisitLdaLookupSlotInsideTypeof() {
 
 BytecodeGraphBuilder::Environment*
 BytecodeGraphBuilder::CheckContextExtensionAtDepth(
-    Environment* slow_environment, uint32_t depth) {
-  Node* extension_slot = NewNode(
-      javascript()->LoadContextNoCell(depth, Context::EXTENSION_INDEX, false));
+    Environment* slow_environment, uint32_t depth, ContextMode context_mode) {
+  Node* extension_slot =
+      NewNode(context_mode == ContextMode::kHasContextCells
+                  ? javascript()->LoadContext(depth, Context::EXTENSION_INDEX)
+                  : javascript()->LoadContextNoCell(
+                        depth, Context::EXTENSION_INDEX, false));
   Node* check_no_extension =
       NewNode(simplified()->ReferenceEqual(), extension_slot,
               jsgraph()->UndefinedConstant());
@@ -1869,7 +1876,9 @@ BytecodeGraphBuilder::Environment* BytecodeGraphBuilder::CheckContextExtensions(
         !broker()->dependencies()->DependOnEmptyContextExtension(scope_info)) {
       // Using EmptyContextExtension dependency is not possible for this
       // scope_info, so generate dynamic checks.
-      slow_environment = CheckContextExtensionAtDepth(slow_environment, d);
+      // The extension slot is never a context cell.
+      slow_environment = CheckContextExtensionAtDepth(
+          slow_environment, d, ContextMode::kNoContextCells);
     }
     DCHECK_IMPLIES(!scope_info.HasOuterScopeInfo(), d + 1 == depth);
     if (scope_info.HasOuterScopeInfo()) {
@@ -1900,7 +1909,13 @@ BytecodeGraphBuilder::CheckContextExtensionsSlowPath(uint32_t depth) {
     {
       SubEnvironment sub_environment(this);
       NewIfTrue();
-      slow_environment = CheckContextExtensionAtDepth(slow_environment, d);
+      // We don't know if the context has a context extension. If it doesn't,
+      // the context extension offset might contain a context cell and even
+      // though this code will not be executed it might still trigger a DCHECK
+      // at later phases after context specialization which guards against using
+      // LoadContextNoCell for contexts having ContextCells.
+      slow_environment = CheckContextExtensionAtDepth(
+          slow_environment, d, ContextMode::kHasContextCells);
       undefined_extension_env = environment();
     }
     NewIfFalse();
@@ -2341,6 +2356,10 @@ void BytecodeGraphBuilder::VisitCreateFunctionContext() {
       javascript()->CreateFunctionContext(scope_info, slots, FUNCTION_SCOPE);
   Node* context = NewNode(op);
   environment()->BindAccumulator(context);
+}
+
+void BytecodeGraphBuilder::VisitCreateFunctionContextWithCells() {
+  VisitCreateFunctionContext();
 }
 
 void BytecodeGraphBuilder::VisitCreateEvalContext() {

@@ -12,6 +12,7 @@
 #include "src/asmjs/asm-js.h"
 #include "src/ast/prettyprinter.h"
 #include "src/ast/scopes.h"
+#include "src/base/fpu.h"
 #include "src/base/logging.h"
 #include "src/base/platform/time.h"
 #include "src/baseline/baseline.h"
@@ -2756,6 +2757,9 @@ BackgroundDeserializeTask::BackgroundDeserializeTask(
 }
 
 void BackgroundDeserializeTask::Run() {
+  base::FlushDenormalsScope flush_denormals_scope(
+      isolate_for_local_isolate_->flush_denormals());
+
   TimedHistogramScope timer(timer_, nullptr, &background_time_in_microseconds_);
   LocalIsolate isolate(isolate_for_local_isolate_, ThreadKind::kBackground);
   UnparkedScope unparked_scope(&isolate);
@@ -2794,6 +2798,9 @@ bool BackgroundDeserializeTask::ShouldMergeWithExistingScript() const {
 
 void BackgroundDeserializeTask::MergeWithExistingScript() {
   DCHECK(ShouldMergeWithExistingScript());
+
+  base::FlushDenormalsScope flush_denormals_scope(
+      isolate_for_local_isolate_->flush_denormals());
 
   LocalIsolate isolate(isolate_for_local_isolate_, ThreadKind::kBackground);
   UnparkedScope unparked_scope(&isolate);
